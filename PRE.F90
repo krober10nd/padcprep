@@ -1,19 +1,18 @@
-MODULE GRAPH
+MODULE PRE
 IMPLICIT NONE 
 !This module contains all the global variables and read subroutines for
-!the grid. 
-CHARACTER(len=80)   :: AGRID !grid name 
+!the graph. 
+CHARACTER(len=80)   :: AGRAPH !graph name 
 INTEGER             :: NELG, NNODG !number of elements and nodes     
 INTEGER             :: I,J,ITEMP !counters
 INTEGER,ALLOCATABLE :: NNEG(:,:) !global element connectivity 
 REAL(8),ALLOCATABLE :: DP(:),X(:),Y(:) !bathymetry, lon and lat
       
 CONTAINS 
-
   SUBROUTINE READGRAPH                                      
-  !--Read the mesh 
+  !--Read the graph
   OPEN(unit=14, file="fort.14")
-  READ(14,80) AGRID
+  READ(14,80) AGRAPH
   !--Read number of elements and nodes
   READ(14,*) NELG,NNODG
   PRINT *, "NUMBER OF ELEMENTS:",NELG 
@@ -43,5 +42,5 @@ CONTAINS
   CLOSE(14)
   80    FORMAT(A95)
   RETURN 
-  END SUBROUTINE READGRID
-END MODULE GRAPH
+  END SUBROUTINE READGRAPH
+END MODULE PRE
