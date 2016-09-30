@@ -1,25 +1,24 @@
 MODULE PARPREP
-!--THIS MODULE CONTAINS THE CALLS TO PARMETIS 
-!--IT'S SIMILAR TO ADCPREP IN THAT IT FIRST ASSEMBLES THE CONNECTIVITY BUT INSTEAD SPLITS IT UP
-!--BETWEEN CORES 
 USE PRE
 USE MESSENGER  
 IMPLICIT NONE 
 
 CONTAINS 
 
+!---------------------------------------------------------------------
+!      S U B R O U T I N E   D E C O M P O S E 
+!---------------------------------------------------------------------
+!  ROUTINE TO DECOMPOSE A GRID USING PARMETIS 4.0  
+!---------------------------------------------------------------------
 SUBROUTINE DECOMPOSE 
    IMPLICIT NONE 
-
-!perform serial decomposition on PE0000 before splitting and sending to all
-!For parmetis 
+! 
    INTEGER                :: WGTFLAG, NUMFLAG, NPARTS
    INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJG(:),ADJNCYG(:)  
    INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
 !
    INTEGER                :: INODE,JNODE,J,IEL  !COUNTERS
    INTEGER                :: MNED,NCOUNT  
-   INTEGER                :: BGIND,NPL   ! here I split the nodes equally among PEs
    INTEGER                :: MNEDLOC     ! maximum number of edges
    INTEGER                :: NEDGETOT
 !
@@ -27,18 +26,45 @@ SUBROUTINE DECOMPOSE
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
 !                                        ! used in different places
    INTEGER,ALLOCATABLE    :: OPTIONS     ! options to pass  
-   INTEGER,ALLOCATABLE    :: VTXDIST(:)  ! how the nodes are distributed across PEs.
+   INTEGER,ALLOCATABLE    :: VTXDIST(:)  ! how the nodes are distributed across all PEs.
    INTEGER,ALLOCATABLE    :: XL(:),YL(:) ! nodal positions local to this PE 
+!
+   INTEGER                :: BGIND,ENDIND! here I split the nodes equally among PEs
+   INTEGER                :: CHUNK       ! amount of nodes passed to each PE
+   INTEGER                :: LEFTOVER    ! some vectors may not be of equal len
+   INTEGER,ALLOCATABLE    :: NPLdmy(:),NPL(:)  ! vectors of local nodes on this PE
+   INTEGER,ALLOCATABLE    :: REMAINDER(:)!used to deal with cases when NP/NPROC
+!                                        !has modulus
+!
+! break apart vector nodes into chunks
+   CHUNK=NP/NPROC ! integer division rounds down
+   LEFTOVER=MOD(NP,NPROC) !modulus
+ALLOCATE( NPLdmy(CHUNK) )
+! nodes that are sent to this PE
+   BGIND=(MYPROC*CHUNK)+1 
+   ENDIND=(MYPROC+1)*CHUNK
+   NPLdmy(:)=NP(BGIND:ENDIND)
+! if NP/NPROC has a nonzero modulus, then send these nodes to the last PE (NPROC) 
+IF(MYPROC.EQ.NPROC) THEN 
+   IF(LEFTOVER.GE.0) THEN
+      ALLOCATE( REMAINDER(LEFTOVER) )
+      ALLOCATE( NPL(LEFTOVER+CHUNK) ) 
+      REMAINDER(:)=NP( (CHUNK*MYPROC)+1:(CHUNK*MYPROC)+LEFTOVER )
+      NPL = [NPLdmy,REMAINDER] 
+   ENDIF
+  ELSE !i.e., not the last PE (NPROC) 
+   ALLOCATE(NPL(CHUNK))
+   NPL = NPLdmy
+ENDIF
+ 
+   ALLOCATE( NEDGES(CHUNK), NEDLOC(CHUNK) )
+   ALLOCATE( ITVECT1(CHUNK),ITVECT2(CHUNK) )
 
-IF(MYPROC.EQ.0) THEN    
-   ALLOCATE( NEDGES(NP), NEDLOC(NP) )
-   ALLOCATE( ITVECT1(NP),ITVECT2(NP) )
-! First create global xadj and adjncy just like in serial
 !-------------------------------------------------------------
 !  COMPUTES THE TOTAL NUMBER OF EDGES        -->    MNED
 !  AND THE MAX NUMBER OF EDGES FOR ANY NODE  -->    MNEDLOC
 !-------------------------------------------------------------
- 
+!make sure all counter variables are assigned 
         MNED    =   0  
         NCOUNT =    0 
         IEL    =    1 
