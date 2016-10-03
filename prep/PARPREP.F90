@@ -2,64 +2,39 @@ MODULE PARPREP
 USE PRE
 USE MESSENGER  
 IMPLICIT NONE 
+INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),ADJNCY(:)  
 
 CONTAINS 
 
 !---------------------------------------------------------------------
-!      S U B R O U T I N E   D E C O M P O S E 
+!      S U B R O U T I N E   D E C O M P O S E  S E R I A L 
 !---------------------------------------------------------------------
-!  ROUTINE TO DECOMPOSE A GRID USING PARMETIS 4.0  
+!  ROUTINE TO BUILD XADJ AND ADJ 
 !---------------------------------------------------------------------
-SUBROUTINE DECOMPOSE 
+SUBROUTINE DECOMPOSE_SERIAL 
    IMPLICIT NONE 
 ! 
    INTEGER                :: WGTFLAG, NUMFLAG, NPARTS
-   INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJG(:),ADJNCYG(:)  
-   INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
 !
-   INTEGER                :: INODE,JNODE,J,IEL  !COUNTERS
+   INTEGER                :: INODE,JNODE,K,J,IEL  !COUNTERS
    INTEGER                :: MNED,NCOUNT  
    INTEGER                :: MNEDLOC     ! maximum number of edges
    INTEGER                :: NEDGETOT
 !
    INTEGER,ALLOCATABLE    :: NEDLOC(:)   ! number of edges on each node 
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
+   INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
 !                                        ! used in different places
    INTEGER,ALLOCATABLE    :: OPTIONS     ! options to pass  
    INTEGER,ALLOCATABLE    :: VTXDIST(:)  ! how the nodes are distributed across all PEs.
    INTEGER,ALLOCATABLE    :: XL(:),YL(:) ! nodal positions local to this PE 
 !
-   INTEGER                :: BGIND,ENDIND! here I split the nodes equally among PEs
-   INTEGER                :: CHUNK       ! amount of nodes passed to each PE
-   INTEGER                :: LEFTOVER    ! some vectors may not be of equal len
-   INTEGER,ALLOCATABLE    :: NPLdmy(:),NPL(:)  ! vectors of local nodes on this PE
-   INTEGER,ALLOCATABLE    :: REMAINDER(:)!used to deal with cases when NP/NPROC
-!                                        !has modulus
+   LOGICAL                :: FOUND,SYMMETRIC 
+!DEVELOP XADJ AND ADJ FOR ENTIRE GRID 
 !
-! break apart vector nodes into chunks
-   CHUNK=NP/NPROC ! integer division rounds down
-   LEFTOVER=MOD(NP,NPROC) !modulus
-ALLOCATE( NPLdmy(CHUNK) )
-! nodes that are sent to this PE
-   BGIND=(MYPROC*CHUNK)+1 
-   ENDIND=(MYPROC+1)*CHUNK
-   NPLdmy(:)=NP(BGIND:ENDIND)
-! if NP/NPROC has a nonzero modulus, then send these nodes to the last PE (NPROC) 
-IF(MYPROC.EQ.NPROC) THEN 
-   IF(LEFTOVER.GE.0) THEN
-      ALLOCATE( REMAINDER(LEFTOVER) )
-      ALLOCATE( NPL(LEFTOVER+CHUNK) ) 
-      REMAINDER(:)=NP( (CHUNK*MYPROC)+1:(CHUNK*MYPROC)+LEFTOVER )
-      NPL = [NPLdmy,REMAINDER] 
-   ENDIF
-  ELSE !i.e., not the last PE (NPROC) 
-   ALLOCATE(NPL(CHUNK))
-   NPL = NPLdmy
-ENDIF
- 
-   ALLOCATE( NEDGES(CHUNK), NEDLOC(CHUNK) )
-   ALLOCATE( ITVECT1(CHUNK),ITVECT2(CHUNK) )
-
+        ALLOCATE( NEDGES(NP), NEDLOC(NP) )
+        ALLOCATE ( ITVECT1(NP),ITVECT2(NP) )
+!
 !-------------------------------------------------------------
 !  COMPUTES THE TOTAL NUMBER OF EDGES        -->    MNED
 !  AND THE MAX NUMBER OF EDGES FOR ANY NODE  -->    MNEDLOC
@@ -76,7 +51,7 @@ ENDIF
            NEDLOC(INODE) = 0
         ENDDO
 !
-        DO J=1, 3
+        DO J=1,3
            DO IEL=1, NE
               INODE = NNELG(J,IEL)
               NCOUNT = NEDLOC(INODE) + 2
@@ -96,7 +71,7 @@ ENDIF
         print *, "total number of edges = ", MNED
         print *, "maximum co-nodes for any node = ", MNEDLOC
 !
-        ALLOCATE ( ADJNCYG(MNED) )
+        ALLOCATE ( ADJNCY(MNED) )
         ALLOCATE ( CO_NODES(MNEDLOC,NP) )
 ! 
 !-------------------------------------------------------------
@@ -135,62 +110,105 @@ ENDIF
 !  REMOVE REDUNDANCY IN NODE LISTS
 !-------------------------------------------------------------
 !
-!        NEDGETOT = 0           !  This will be twice number of edges
-!        DO INODE = 1,NP   
-!           DO J=1, NEDGES(INODE)
-!              ITVECT1(J) = CO_NODES(J,INODE)
-!           ENDDO
+         NEDGETOT = 0           !  This will be twice number of edges
+         DO INODE = 1,NP   
+           DO J=1, NEDGES(INODE)
+              ITVECT1(J) = CO_NODES(J,INODE)
+           ENDDO
 !
-!           IF (NEDGES(INODE).GT.1) THEN
-!             NCOUNT = NEDGES(INODE)
-!             CALL SORT(NCOUNT,ITVECT1)
-!             JNODE = ITVECT1(1)
-!             CO_NODES(1,INODE) = JNODE
-!             NCOUNT = 1
-!             DO J=2, NEDGES(INODE)
-!                IF (ITVECT1(J).NE.JNODE) THEN
-!                  NCOUNT = NCOUNT + 1
-!                  JNODE = ITVECT1(J)
-!                  CO_NODES(NCOUNT,INODE) = JNODE
-!                ENDIF
-!             ENDDO
-!           ELSE
-!             print *, "node = ",INODE," is isolated"
-!             stop 'vic'
-!           ENDIF
-!           NEDGES(INODE) = NCOUNT
-!           NEDGETOT = NEDGETOT + NCOUNT
-!           if (nedges(inode) == 0) then
-!             print *, "inode = ", inode, " belongs to no edges"
-!             stop 'vic'
-!           endif
-!        ENDDO
-!        NEDGETOT = NEDGETOT/2
-!        print *, "edge count = ",nedgetot
+           IF (NEDGES(INODE).GT.1) THEN
+             NCOUNT = NEDGES(INODE)
+              CALL SORT(NCOUNT,ITVECT1)
+              JNODE = ITVECT1(1)
+              CO_NODES(1,INODE) = JNODE
+              NCOUNT = 1
+              DO J=2, NEDGES(INODE)
+                 IF (ITVECT1(J).NE.JNODE) THEN
+                   NCOUNT = NCOUNT + 1
+                   JNODE = ITVECT1(J)
+                   CO_NODES(NCOUNT,INODE) = JNODE
+                 ENDIF
+              ENDDO
+            ELSE
+             PRINT *, "node = ",INODE," is isolated"
+              stop 'vic'
+            ENDIF
+            NEDGES(INODE) = NCOUNT
+            NEDGETOT = NEDGETOT + NCOUNT
+            IF (NEDGES(INODE) == 0) THEN
+              PRINT *, "inode = ", INODE, " belongs to no edges"
+              STOP 'vic'
+            ENDIF
+         ENDDO
+         NEDGETOT = NEDGETOT/2
+         PRINT *, "edge count = ",NEDGETOT
 !
-!C  check that adjacency matrix is symmetric
-!C
-!      SYMMETRIC = .true.
-!      DO INODE = 1, MNP
-!      DO J = 1, NEDGES(INODE)
-!         JNODE = CO_NODES(J,INODE)
-!         FOUND = .false.
-!         DO K= 1, NEDGES(JNODE
-!            IF (CO_NODES(K,JNODE) == INODE) THEN
-!              FOUND = .true.
-!              EXIT
-!            ENDIF
-!         ENDDO
-!         IF (.not. FOUND) THEN
-!           SYMMETRIC = .false.
-!      print *, "node ",inode," adjacent to ",jnode," but not visa-versa"
-!         ENDIF
-!      ENDDO
-!      ENDDO
-!      IF (.not. SYMMETRIC) THEN
-!         stop 'bad adjacency matrix: not symmetric!'
-!      ENDIF
-ENDIF
+!  check that adjacency matrix is symmetric
+!
+       SYMMETRIC = .TRUE.
+       DO INODE = 1, NP
+       DO J = 1, NEDGES(INODE)
+          JNODE = CO_NODES(J,INODE)
+          FOUND = .FALSE.
+          DO K= 1, NEDGES(JNODE)
+             IF (CO_NODES(K,JNODE) == INODE) THEN
+               FOUND = .TRUE.
+               EXIT
+             ENDIF
+          ENDDO
+          IF (.not. FOUND) THEN
+            SYMMETRIC = .FALSE.
+       print *, "node ",inode," adjacent to ",jnode," but not visa-versa"
+          ENDIF
+       ENDDO
+       ENDDO
+       IF (.NOT. SYMMETRIC) THEN
+          stop 'bad adjacency matrix: not symmetric!'
+       ENDIF
+
       RETURN
-      END SUBROUTINE DECOMPOSE  
+      END SUBROUTINE DECOMPOSE_SERIAL 
+
+
+!---------------------------------------------------------------------
+!      S U B R O U T I N E   D E C O M P O S E  P A R 
+!---------------------------------------------------------------------
+!  ROUTINE TO CALL PARMETIS 4.0
+!---------------------------------------------------------------------
+
+      SUBROUTINE DECOMPOSE_PAR
+         IMPLICIT NONE 
+         INTEGER                :: BGIND,ENDIND! here I split the nodes equally among PEs
+         INTEGER                :: INODE
+         INTEGER                :: CHUNK       ! amount of nodes passed to each PE
+         INTEGER                :: LEFTOVER    ! some vectors may not be of equal len
+         INTEGER,ALLOCATABLE    :: NPLdmy(:),NPL(:)  ! vectors of local nodes on this PE
+         INTEGER,ALLOCATABLE    :: REMAINDER(:)!used to deal with cases when NP/NPROC
+      !                                        !has modulus
+      ! break apart vector nodes into chunks
+         CHUNK=NP/NPROC ! integer division rounds down
+         LEFTOVER=MOD(NP,NPROC) !modulus
+      ALLOCATE( NPLdmy(CHUNK) )
+      ! nodes that are sent to this PE
+         BGIND=(MYPROC*CHUNK)+1 
+         ENDIND=(MYPROC+1)*CHUNK
+      DO INODE = BGIND,ENDIND
+         NPLdmy(INODE)=NNUM(INODE)
+      ENDDO
+      ! if NP/NPROC has a nonzero modulus, then send these nodes to the last PE (NPROC) 
+      IF(MYPROC.EQ.NPROC) THEN 
+         IF(LEFTOVER.GE.0) THEN
+            ALLOCATE( REMAINDER(LEFTOVER) )
+            ALLOCATE( NPL(LEFTOVER+CHUNK) ) 
+      DO INODE = (CHUNK*MYPROC)+1,(CHUNK*MYPROC)+LEFTOVER 
+            REMAINDER(INODE)=NNUM(INODE)
+      ENDDO
+            NPL = [NPLdmy,REMAINDER] 
+         ENDIF
+        ELSE !i.e., not the last PE (NPROC) 
+         ALLOCATE(NPL(CHUNK))
+         NPL = NPLdmy
+      ENDIF
+      RETURN
+      END SUBROUTINE DECOMPOSE_PAR 
 END MODULE PARPREP  
