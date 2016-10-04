@@ -1,8 +1,8 @@
 PROGRAM Driver
 !
 USE PRE, ONLY: X,Y,NNELG,READGRAPH 
-USE PARPREP
-USE MESSENGER, ONLY: MSG_INIT, MSG_FINI 
+USE PARPREP, ONLY: DECOMPOSE_SERIAL,DECOMPOSE_PAR
+USE MESSENGER 
 IMPLICIT NONE
 !---------------------------------------------------------------------
 !      P R O G R A M   D R I V E R
@@ -15,11 +15,12 @@ IMPLICIT NONE
 !---------------------------------------------------------------------
 
 CALL MSG_INIT !start up MPI
-IF(MYPROC.EQ.0) THEN
-CALL READGRAPH !prompt the user for the graph read into all PE's
-CALL DECOMPOSE_SERIAL !build adj and xadj
-ENDIF 
+
+ CALL READGRAPH !prompt the user for the graph read into PE000
+ CALL DECOMPOSE_SERIAL !build adj and xadj
+ CALL DECOMPOSE_PAR   
 !THEN TIMESTEP 
+
 CALL MSG_FINI !shut MPI down  
 
 END PROGRAM Driver

@@ -2,21 +2,20 @@ MODULE PARPREP
 USE PRE
 USE MESSENGER  
 IMPLICIT NONE 
-INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),ADJNCY(:)  
 
+   INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),RXADJ(:),ADJNCY(:),VWGTS(:),EWGTS(:)  
 CONTAINS 
 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  S E R I A L 
 !---------------------------------------------------------------------
 !  ROUTINE TO BUILD XADJ AND ADJ 
+!  DEVELOP XADJ AND ADJ FOR ENTIRE GRID 
 !---------------------------------------------------------------------
 SUBROUTINE DECOMPOSE_SERIAL 
    IMPLICIT NONE 
-! 
-   INTEGER                :: WGTFLAG, NUMFLAG, NPARTS
 !
-   INTEGER                :: INODE,JNODE,K,J,IEL  !COUNTERS
+   INTEGER                :: INODE,JNODE,K,J,IEL,ITOT  !COUNTERS
    INTEGER                :: MNED,NCOUNT  
    INTEGER                :: MNEDLOC     ! maximum number of edges
    INTEGER                :: NEDGETOT
@@ -24,16 +23,14 @@ SUBROUTINE DECOMPOSE_SERIAL
    INTEGER,ALLOCATABLE    :: NEDLOC(:)   ! number of edges on each node 
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
    INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
-!                                        ! used in different places
-   INTEGER,ALLOCATABLE    :: OPTIONS     ! options to pass  
-   INTEGER,ALLOCATABLE    :: VTXDIST(:)  ! how the nodes are distributed across all PEs.
-   INTEGER,ALLOCATABLE    :: XL(:),YL(:) ! nodal positions local to this PE 
-!
    LOGICAL                :: FOUND,SYMMETRIC 
-!DEVELOP XADJ AND ADJ FOR ENTIRE GRID 
+!
+   INTEGER                :: CHUNK,LEFTOVER       
+   INTEGER                :: SCHUNK(0:NPROC-1),DISPS(0:NPROC-1)
 !
         ALLOCATE( NEDGES(NP), NEDLOC(NP) )
         ALLOCATE ( ITVECT1(NP),ITVECT2(NP) )
+        ALLOCATE ( XADJ(NP+1), VWGTS(NP)) 
 !
 !-------------------------------------------------------------
 !  COMPUTES THE TOTAL NUMBER OF EDGES        -->    MNED
@@ -67,11 +64,11 @@ SUBROUTINE DECOMPOSE_SERIAL
            ENDIF  
        ENDDO
 
-
+IF(MYPROC.EQ.0) THEN
         print *, "total number of edges = ", MNED
         print *, "maximum co-nodes for any node = ", MNEDLOC
-!
-        ALLOCATE ( ADJNCY(MNED) )
+ENDIF 
+        ALLOCATE ( ADJNCY(MNED), EWGTS(MNED) )
         ALLOCATE ( CO_NODES(MNEDLOC,NP) )
 ! 
 !-------------------------------------------------------------
@@ -130,20 +127,26 @@ SUBROUTINE DECOMPOSE_SERIAL
                  ENDIF
               ENDDO
             ELSE
-             PRINT *, "node = ",INODE," is isolated"
-              stop 'vic'
+             IF(MYPROC.EQ.0) THEN 
+              PRINT *, "node = ",INODE," is isolated"
+              stop 'KEITH'
+             ENDIF    
             ENDIF
             NEDGES(INODE) = NCOUNT
             NEDGETOT = NEDGETOT + NCOUNT
             IF (NEDGES(INODE) == 0) THEN
+             IF(MYPROC.EQ.0) THEN
               PRINT *, "inode = ", INODE, " belongs to no edges"
-              STOP 'vic'
+              STOP 'KEITH'
+             ENDIF
             ENDIF
          ENDDO
          NEDGETOT = NEDGETOT/2
+        IF(MYPROC.EQ.0) THEN
          PRINT *, "edge count = ",NEDGETOT
+        ENDIF
 !
-!  check that adjacency matrix is symmetric
+!  CHECK THAT ADJACENCY MATRIX IS SYMMETRIC 
 !
        SYMMETRIC = .TRUE.
        DO INODE = 1, NP
@@ -158,14 +161,73 @@ SUBROUTINE DECOMPOSE_SERIAL
           ENDDO
           IF (.not. FOUND) THEN
             SYMMETRIC = .FALSE.
-       print *, "node ",inode," adjacent to ",jnode," but not visa-versa"
-          ENDIF
+         IF(MYPROC.EQ.0) THEN 
+           print *, "node ",inode," adjacent to ",jnode," but not visa-versa"
+         ENDIF 
+         ENDIF
        ENDDO
        ENDDO
        IF (.NOT. SYMMETRIC) THEN
-          stop 'bad adjacency matrix: not symmetric!'
+         IF(MYPROC.EQ.0) THEN  
+         stop 'bad adjacency matrix: not symmetric!'
+         ENDIF
        ENDIF
+!
+!  COMPUTE WEIGHTS OF THE GRAPH VERTICES
+!
+        DO INODE = 1,NP   
+           VWGTS(INODE) = NEDGES(INODE)
+        ENDDO
+!
+!--COMPUTE ADJACENCY LIST OF GRAPH AND ITS EDGE WEIGHTS
+!
+        XADJ(1) = 1
+        ITOT = 0
+        DO INODE = 1,NP
+        DO J = 1, NEDGES(INODE)
+           ITOT = ITOT + 1
+           JNODE = CO_NODES(J,INODE)
+           ADJNCY(ITOT) = JNODE
+           EWGTS(ITOT)  = (VWGTS(JNODE)+VWGTS(INODE))
+        ENDDO
+        XADJ(INODE+1) = ITOT+1
+        ENDDO
+!
+! DUMP GRAPH TO A FILE FOR DEBUGGING
+IF(MYPROC.EQ.0) THEN 
+        OPEN(FILE='metis_graph.txt',UNIT=99)
+        WRITE(99,100) NP, NEDGETOT, 11, 1
+        DO INODE=1, NP
+           WRITE(99,200) VWGTS(INODE),(CO_NODES(J,INODE), EWGTS(XADJ(INODE)+J-1),J=1,NEDGES(INODE))
+        ENDDO
+        CLOSE(99)
+ENDIF       
+! 
+! SCATTERV XADJ TO ALL  PE'S
+!
+        CHUNK=NP/NPROC 
+        LEFTOVER=MOD(NP,CHUNK) 
+        IF(LEFTOVER.EQ.0) THEN
+            DO J = 1,NPROC !NP/NPROC has zero modulus 
+               SCHUNK(J-1)=CHUNK !equal chunks to scatter
+            ENDDO
+          ELSE
+            DO J = 1,NPROC-1 !NP/NPROC has nonzero modulus
+               SCHUNK(J-1)=CHUNK 
+            ENDDO
+             !make the last one a little longer 
+               SCHUNK(NPROC-1)=CHUNK+LEFTOVER
+        ENDIF 
+            DO J = 1,NPROC 
+              DISPS(J-1)=0 !displacements for scatterv, none
+            ENDDO
+        ALLOCATE(RXADJ(SCHUNK(MYPROC))) !receive buffer size 
 
+        CALL MPI_SCATTERV(XADJ,SCHUNK,DISPS,MPI_INT,RXADJ,SCHUNK(MYPROC),MPI_INT,0,MPI_COMM_WORLD,IERR)
+ 
+100    FORMAT(4I10)
+200    FORMAT(100I10)
+      
       RETURN
       END SUBROUTINE DECOMPOSE_SERIAL 
 
@@ -173,42 +235,16 @@ SUBROUTINE DECOMPOSE_SERIAL
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  P A R 
 !---------------------------------------------------------------------
-!  ROUTINE TO CALL PARMETIS 4.0
+!  ROUTINE TO CALL PARMETIS 4.0 AFTER THE CALL TO DECOMPOSE_SERIAL
 !---------------------------------------------------------------------
-
+!
       SUBROUTINE DECOMPOSE_PAR
          IMPLICIT NONE 
-         INTEGER                :: BGIND,ENDIND! here I split the nodes equally among PEs
-         INTEGER                :: INODE
-         INTEGER                :: CHUNK       ! amount of nodes passed to each PE
-         INTEGER                :: LEFTOVER    ! some vectors may not be of equal len
-         INTEGER,ALLOCATABLE    :: NPLdmy(:),NPL(:)  ! vectors of local nodes on this PE
-         INTEGER,ALLOCATABLE    :: REMAINDER(:)!used to deal with cases when NP/NPROC
-      !                                        !has modulus
-      ! break apart vector nodes into chunks
-         CHUNK=NP/NPROC ! integer division rounds down
-         LEFTOVER=MOD(NP,NPROC) !modulus
-      ALLOCATE( NPLdmy(CHUNK) )
-      ! nodes that are sent to this PE
-         BGIND=(MYPROC*CHUNK)+1 
-         ENDIND=(MYPROC+1)*CHUNK
-      DO INODE = BGIND,ENDIND
-         NPLdmy(INODE)=NNUM(INODE)
-      ENDDO
-      ! if NP/NPROC has a nonzero modulus, then send these nodes to the last PE (NPROC) 
-      IF(MYPROC.EQ.NPROC) THEN 
-         IF(LEFTOVER.GE.0) THEN
-            ALLOCATE( REMAINDER(LEFTOVER) )
-            ALLOCATE( NPL(LEFTOVER+CHUNK) ) 
-      DO INODE = (CHUNK*MYPROC)+1,(CHUNK*MYPROC)+LEFTOVER 
-            REMAINDER(INODE)=NNUM(INODE)
-      ENDDO
-            NPL = [NPLdmy,REMAINDER] 
-         ENDIF
-        ELSE !i.e., not the last PE (NPROC) 
-         ALLOCATE(NPL(CHUNK))
-         NPL = NPLdmy
-      ENDIF
+     
+      PRINT*,"MYPROC ",MYPROC," XADJ RECEIVED",SIZE(RXADJ(:))
+
+
+
       RETURN
       END SUBROUTINE DECOMPOSE_PAR 
 END MODULE PARPREP  

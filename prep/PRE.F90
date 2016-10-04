@@ -17,10 +17,7 @@ CONTAINS
   SUBROUTINE READGRAPH                                      
     IMPLICIT NONE 
     INTEGER             :: I,J,ITEMP !counters
-IF(MYPROC.EQ.0) THEN 
-     WRITE(*,*)'ENTER THE NAME OF THE GRAPH'
-     READ(*,'(A)')AGRAPH 
-    OPEN(13, FILE=AGRAPH,STATUS='OLD')
+    OPEN(13, FILE='fort.14',STATUS='OLD')
     !--Read title 
     READ(13,*) dmy
     !--Read number of elements and nodes
@@ -57,7 +54,6 @@ IF(MYPROC.EQ.0) THEN
     ENDDO
   CLOSE(13)
 80    FORMAT(A95)
-ENDIF
     RETURN 
   END SUBROUTINE READGRAPH
 !---------------------------------------------------------------------------
