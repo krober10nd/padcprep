@@ -3,14 +3,13 @@ USE PRE
 USE MESSENGER  
 IMPLICIT NONE 
 
-   INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),RXADJ(:),ADJNCY(:),VWGTS(:),EWGTS(:)  
+   INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),LOCXADJ(:),ADJNCY(:),RADJNCY(:),VWGTS(:),EWGTS(:)  
 CONTAINS 
 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  S E R I A L 
 !---------------------------------------------------------------------
 !  ROUTINE TO BUILD XADJ AND ADJ 
-!  DEVELOP XADJ AND ADJ FOR ENTIRE GRID 
 !---------------------------------------------------------------------
 SUBROUTINE DECOMPOSE_SERIAL 
    IMPLICIT NONE 
@@ -23,10 +22,11 @@ SUBROUTINE DECOMPOSE_SERIAL
    INTEGER,ALLOCATABLE    :: NEDLOC(:)   ! number of edges on each node 
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
    INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
+   INTEGER,ALLOCATABLE    :: BGN(:)
    LOGICAL                :: FOUND,SYMMETRIC 
 !
    INTEGER                :: CHUNK,LEFTOVER       
-   INTEGER                :: SCHUNK(0:NPROC-1),DISPS(0:NPROC-1)
+   INTEGER                :: VTXDIST(NPROC+1)
 !
         ALLOCATE( NEDGES(NP), NEDLOC(NP) )
         ALLOCATE ( ITVECT1(NP),ITVECT2(NP) )
@@ -41,6 +41,7 @@ SUBROUTINE DECOMPOSE_SERIAL
         NCOUNT =    0 
         IEL    =    1 
         INODE  =    1
+        K      =    1
         J      =    1
 ! 
         MNED = 0
@@ -195,36 +196,38 @@ ENDIF
 !
 ! DUMP GRAPH TO A FILE FOR DEBUGGING
 IF(MYPROC.EQ.0) THEN 
-        OPEN(FILE='metis_graph.txt',UNIT=99)
+        OPEN(FILE='full_metis_graph.txt',UNIT=99)
         WRITE(99,100) NP, NEDGETOT, 11, 1
         DO INODE=1, NP
            WRITE(99,200) VWGTS(INODE),(CO_NODES(J,INODE), EWGTS(XADJ(INODE)+J-1),J=1,NEDGES(INODE))
         ENDDO
         CLOSE(99)
 ENDIF       
-! 
-! SCATTERV XADJ TO ALL  PE'S
+!!! 
+!! send chunks of XADJ and the corresponding adjncy list to each PE.
+!!
+!        chunk=np/nproc 
+!        leftover=mod(np,chunk) 
+!        if(myproc.eq.0) then 
+!         print *,"xadj",xadj
+!         print *,"adjncy",adjncy
+!        endif 
 !
-        CHUNK=NP/NPROC 
-        LEFTOVER=MOD(NP,CHUNK) 
-        IF(LEFTOVER.EQ.0) THEN
-            DO J = 1,NPROC !NP/NPROC has zero modulus 
-               SCHUNK(J-1)=CHUNK !equal chunks to scatter
-            ENDDO
-          ELSE
-            DO J = 1,NPROC-1 !NP/NPROC has nonzero modulus
-               SCHUNK(J-1)=CHUNK 
-            ENDDO
-             !make the last one a little longer 
-               SCHUNK(NPROC-1)=CHUNK+LEFTOVER
-        ENDIF 
-            DO J = 1,NPROC 
-              DISPS(J-1)=0 !displacements for scatterv, none
-            ENDDO
-        ALLOCATE(RXADJ(SCHUNK(MYPROC))) !receive buffer size 
+!       if(myproc.ne.nproc) then
+!         allocate(locxadj(chunk+1))
+!       else !last pe gets leftover
+!         allocate(locxadj(chunk+1+leftover)) 
+!       endif
+!       
+!       if(myproc.eq.0) then
+!         locxadj=xadj(1:chunk)
+!       elseif(myproc.ne.nproc) then  
+!         locxadj=xadj( (myproc+1)*chunk:((myproc+1)*chunk)+chunk )
+!       else 
+!       
+!       endif
+!       print *,"locxadj", locxadj            
 
-        CALL MPI_SCATTERV(XADJ,SCHUNK,DISPS,MPI_INT,RXADJ,SCHUNK(MYPROC),MPI_INT,0,MPI_COMM_WORLD,IERR)
- 
 100    FORMAT(4I10)
 200    FORMAT(100I10)
       
@@ -241,9 +244,10 @@ ENDIF
       SUBROUTINE DECOMPOSE_PAR
          IMPLICIT NONE 
      
-      PRINT*,"MYPROC ",MYPROC," XADJ RECEIVED",SIZE(RXADJ(:))
-
-
+!      RXADJ = RXADJ - RXADJ(1) + 1 !adjncy has to begin at 1 
+!      PRINT*,"MYPROC ",MYPROC," XADJ RECEIVED",RXADJ(:)
+      !subtract off the first entry of XADJ and add one so each processor  
+    
 
       RETURN
       END SUBROUTINE DECOMPOSE_PAR 

@@ -17,8 +17,8 @@ IMPLICIT NONE
 CALL MSG_INIT !start up MPI
 
  CALL READGRAPH !prompt the user for the graph read into PE000
- CALL DECOMPOSE_SERIAL !build adj and xadj
- CALL DECOMPOSE_PAR   
+! CALL DECOMPOSE_SERIAL !build adj and xadj
+! CALL DECOMPOSE_PAR   
 !THEN TIMESTEP 
 
 CALL MSG_FINI !shut MPI down  

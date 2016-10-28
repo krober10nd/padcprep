@@ -1,6 +1,7 @@
 FC = mpif90 
+libdir=-L../prep/parmetis-4.0.3/build/Linux-x86_64/libparmetis
 FFLAGS = -O0 -c -traceback -g -check bounds 
-LFLAGS =  -O0
+LFLAGS =  -O0 $(libdir) -lparmetis
 LINK = $(FC)
 TARGET =  ../DynExchange.exe 
 OBJS =  ../src/MESSENGER.o \

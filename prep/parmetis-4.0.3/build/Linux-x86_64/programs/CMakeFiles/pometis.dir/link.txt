@@ -1,0 +1,1 @@
+/opt/crc/m/mvapich2/2.1/intel/15.0/mlx/bin/mpicc   -DLINUX -D_FILE_OFFSET_BITS=64 -DNDEBUG -DNDEBUG2 -DHAVE_EXECINFO_H -DHAVE_GETLINE -O3   CMakeFiles/pometis.dir/pometis.c.o CMakeFiles/pometis.dir/io.c.o  -o pometis -rdynamic ../libparmetis/libparmetis.a ../libmetis/libmetis.a -lm 

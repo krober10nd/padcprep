@@ -1,0 +1,6 @@
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/libparmetis/CMakeFiles/parmetis.dir
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/programs/CMakeFiles/pometis.dir
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/programs/CMakeFiles/ptest.dir
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/programs/CMakeFiles/parmetis_prog.dir
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/libmetis/CMakeFiles/metis.dir
+/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/programs/CMakeFiles/mtest.dir
