@@ -1,7 +1,7 @@
 PROGRAM Driver
 !
 USE PRE, ONLY: X,Y,NNELG,READGRAPH 
-USE PARPREP, ONLY: DECOMPOSE_SERIAL,DECOMPOSE_PAR
+USE PARPREP, ONLY: BUILD,DECOMPOSE_PAR
 USE MESSENGER 
 IMPLICIT NONE
 !---------------------------------------------------------------------
@@ -16,8 +16,8 @@ IMPLICIT NONE
 
 CALL MSG_INIT !start up MPI
 
- CALL READGRAPH !prompt the user for the graph read into PE000
-! CALL DECOMPOSE_SERIAL !build adj and xadj
+CALL READGRAPH 
+!CALL BUILD !build adj and xadj
 ! CALL DECOMPOSE_PAR   
 !THEN TIMESTEP 
 

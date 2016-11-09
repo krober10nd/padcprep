@@ -7,11 +7,11 @@ IMPLICIT NONE
 CONTAINS 
 
 !---------------------------------------------------------------------
-!      S U B R O U T I N E   D E C O M P O S E  S E R I A L 
+!      S U B R O U T I N E   B U I L D 
 !---------------------------------------------------------------------
 !  ROUTINE TO BUILD XADJ AND ADJ 
 !---------------------------------------------------------------------
-SUBROUTINE DECOMPOSE_SERIAL 
+SUBROUTINE BUILD 
    IMPLICIT NONE 
 !
    INTEGER                :: INODE,JNODE,K,J,IEL,ITOT  !COUNTERS
@@ -28,10 +28,12 @@ SUBROUTINE DECOMPOSE_SERIAL
    INTEGER                :: CHUNK,LEFTOVER       
    INTEGER                :: VTXDIST(NPROC+1)
 !
+        NE = CHUNK 
+        NP = CHUNK_NP
+!
         ALLOCATE( NEDGES(NP), NEDLOC(NP) )
         ALLOCATE ( ITVECT1(NP),ITVECT2(NP) )
         ALLOCATE ( XADJ(NP+1), VWGTS(NP)) 
-!
 !-------------------------------------------------------------
 !  COMPUTES THE TOTAL NUMBER OF EDGES        -->    MNED
 !  AND THE MAX NUMBER OF EDGES FOR ANY NODE  -->    MNEDLOC
@@ -43,7 +45,7 @@ SUBROUTINE DECOMPOSE_SERIAL
         INODE  =    1
         K      =    1
         J      =    1
-! 
+  
         MNED = 0
         DO INODE = 1,NP
            NEDLOC(INODE) = 0
@@ -130,7 +132,7 @@ ENDIF
             ELSE
              IF(MYPROC.EQ.0) THEN 
               PRINT *, "node = ",INODE," is isolated"
-              stop 'KEITH'
+              stop
              ENDIF    
             ENDIF
             NEDGES(INODE) = NCOUNT
@@ -138,7 +140,7 @@ ENDIF
             IF (NEDGES(INODE) == 0) THEN
              IF(MYPROC.EQ.0) THEN
               PRINT *, "inode = ", INODE, " belongs to no edges"
-              STOP 'KEITH'
+              stop
              ENDIF
             ENDIF
          ENDDO
@@ -194,45 +196,19 @@ ENDIF
         XADJ(INODE+1) = ITOT+1
         ENDDO
 !
-! DUMP GRAPH TO A FILE FOR DEBUGGING
-IF(MYPROC.EQ.0) THEN 
-        OPEN(FILE='full_metis_graph.txt',UNIT=99)
-        WRITE(99,100) NP, NEDGETOT, 11, 1
-        DO INODE=1, NP
-           WRITE(99,200) VWGTS(INODE),(CO_NODES(J,INODE), EWGTS(XADJ(INODE)+J-1),J=1,NEDGES(INODE))
-        ENDDO
-        CLOSE(99)
-ENDIF       
-!!! 
-!! send chunks of XADJ and the corresponding adjncy list to each PE.
-!!
-!        chunk=np/nproc 
-!        leftover=mod(np,chunk) 
-!        if(myproc.eq.0) then 
-!         print *,"xadj",xadj
-!         print *,"adjncy",adjncy
-!        endif 
-!
-!       if(myproc.ne.nproc) then
-!         allocate(locxadj(chunk+1))
-!       else !last pe gets leftover
-!         allocate(locxadj(chunk+1+leftover)) 
-!       endif
-!       
-!       if(myproc.eq.0) then
-!         locxadj=xadj(1:chunk)
-!       elseif(myproc.ne.nproc) then  
-!         locxadj=xadj( (myproc+1)*chunk:((myproc+1)*chunk)+chunk )
-!       else 
-!       
-!       endif
-!       print *,"locxadj", locxadj            
-
-100    FORMAT(4I10)
-200    FORMAT(100I10)
+! DUMP GRAPH FILE
+!        makedirqq(
+!        OPEN(FILE='local_metis_graph.txt',UNIT=99)
+!        WRITE(99,100) NP, NEDGETOT, 11, 1
+!        DO INODE=1, NP
+!           WRITE(99,200) VWGTS(INODE),(CO_NODES(J,INODE), EWGTS(XADJ(INODE)+J-1),J=1,NEDGES(INODE))
+!        ENDDO
+!        CLOSE(99)
+!100    FORMAT(4I10)
+!200    FORMAT(100I10)
       
       RETURN
-      END SUBROUTINE DECOMPOSE_SERIAL 
+      END SUBROUTINE BUILD
 
 
 !---------------------------------------------------------------------
@@ -244,10 +220,6 @@ ENDIF
       SUBROUTINE DECOMPOSE_PAR
          IMPLICIT NONE 
      
-!      RXADJ = RXADJ - RXADJ(1) + 1 !adjncy has to begin at 1 
-!      PRINT*,"MYPROC ",MYPROC," XADJ RECEIVED",RXADJ(:)
-      !subtract off the first entry of XADJ and add one so each processor  
-    
 
       RETURN
       END SUBROUTINE DECOMPOSE_PAR 

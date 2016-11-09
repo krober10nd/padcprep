@@ -3,12 +3,14 @@ USE MESSENGER
 IMPLICIT NONE 
 !This module contains all the global variables, read subroutines for
 !the graph, and the metis libaries.  
-CHARACTER(len=80)   :: AGRAPH,dmy !graph name, garbage  
+CHARACTER(len=80)   :: dmy !garbage  
+CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
+CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
+CHARACTER(LEN=20) :: FILENAME
 INTEGER             :: NE, NP  !number of elements,nodes    
-INTEGER             :: CHUNK 
+INTEGER             :: CHUNK,CHUNK_NP,LEFTOVER 
 INTEGER,ALLOCATABLE :: NNELG(:,:) !element connectivity 
-INTEGER,ALLOCATABLE :: NNUM(:) !node numbers
-INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of elements numbers
+INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
 INTEGER,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:) !unique node numbers contained in elements
 REAL(8),ALLOCATABLE :: X(:),Y(:) !position     
 CONTAINS 
@@ -19,24 +21,31 @@ CONTAINS
 !---------------------------------------------------------------------
   SUBROUTINE READGRAPH                                      
     IMPLICIT NONE 
-    INTEGER             :: I,J,ITEMP !counters
+    INTEGER :: I,J,K,ITEMP !counters
+!
     OPEN(13, FILE='fort.14',STATUS='OLD')
     !--Read title 
     READ(13,*) dmy
     !--Read number of elements and nodes
     READ(13,*) NE,NP
+   
+IF(MYPROC.NE.(NPROC-1)) THEN !if not the last processor 
     CHUNK = NE/NPROC
-   !
-    IF(MYPROC.EQ.0) THEN 
-      PRINT *, "NUMBER OF ELEMENTS:",NE 
-      PRINT *, "NUMBER OF NODES:",NP
-      PRINT *, "CHUNK SIZE",CHUNK
-    ENDIF     
-    
-IF(MYPROC.NE.(NPROC-1)) !if not the last processor 
-    ALLOCATE(NNELG(3,CHUNK),ITVECT1(3*CHUNK),UQNNUM(6*CHUNK))
-    UQNNUM(:)=0
-    ! skip nodes the first time, we'll come back
+ELSE 
+    CHUNK = NE/NPROC
+    LEFTOVER = NP - CHUNK*(NPROC)         
+    CHUNK = CHUNK + LEFTOVER 
+ENDIF
+
+IF(MYPROC.EQ.0) THEN 
+  PRINT *, "NUMBER OF ELEMENTS:",NE 
+  PRINT *, "NUMBER OF NODES:",NP
+  PRINT *, "CHUNK SIZE",CHUNK
+ENDIF     
+
+ ALLOCATE(NNELG(3,CHUNK),ITVECT1(3*CHUNK),DMY_UQNNUM(6*CHUNK))
+ DMY_UQNNUM(:)=0
+ ! skip nodes the first time, we'll come back
     DO I = 1,NP 
         READ(13,*)
     ENDDO
@@ -54,11 +63,9 @@ IF(MYPROC.NE.(NPROC-1)) !if not the last processor
 !step 1. find the node numbers associated with the elements that are on myproc
 !step 2. sort them in ascending order 
 !step 3. determine only the unique node numbers
-    IF(MYPROC.EQ.0) THEN 
-      !reshape NNELG to vector 
-      ITVECT1=RESHAPE(NNELG,(/CHUNK*3/))
-      CALL SORT(CHUNK*3,ITVECT1)
-    ENDIF
+   !reshape NNELG to vector 
+    ITVECT1=RESHAPE(NNELG,(/CHUNK*3/))
+    CALL SORT(CHUNK*3,ITVECT1)
     !only keep unique node numbers 
     J=1
     DO I = 1,SIZE(ITVECT1)-1
@@ -80,48 +87,45 @@ IF(MYPROC.NE.(NPROC-1)) !if not the last processor
        IF(DMY_UQNNUM(I).EQ.0) CYCLE
         J=J+1
     ENDDO
-    ALLOCATE(uqnnum(J)) !j is now # of non-zero enteries
+    CHUNK_NP = J 
+    ALLOCATE(UQNNUM(CHUNK_NP)) !j is now # of non-zero enteries
     K=1 !only keep non zero enteries 
-    DO I = 1,SIZE(DMY_UQNNUM) 
-       IF(DMY_UQNNUM(I).EQ.0) CYCLE
+    DO I = 1,CHUNK_NP 
         UQNNUM(K)=DMY_UQNNUM(I) 
          K=K+1
     ENDDO 
 
-
-!TODO: handle the case when NE/NPROC has non-zero modulus.
+!now read in the node table associated with those elements 
 !rewind the file to the top 
     OPEN(13,FILE='fort.14',STATUS='OLD')
-    !--Read title 
     READ(13,*)
-    !--Read number of elements and nodes
     READ(13,*) 
 
-    ALLOCATE(X(NP),Y(NP),NNUM(NP))
-    !
-    !--Read nodal connectivity and bathymetry
-    !
-    I = 1 
-    J = 1  
-    DO I = 1,NP !read in only the sections of the graph you need 
-       READ(13,*) J,X(I),Y(I)
-       NNUM(I) = J
+    ALLOCATE(X(J),Y(J))
+!--Read nodal connectivity
+    DO I = 1,SIZE(UQNNUM)
+      IF(I.NE.UQNNUM(I)) THEN 
+        READ(13,*) 
+      ELSE    
+        READ(13,*) J,X(I),Y(I)
+      ENDIF
     ENDDO
-ELSE !must be last processor, then the chunk size chunk + leftover
 
-
-
-
-
-
-ENDIF !
-
-
-
-
-
-
-80    FORMAT(A95)
+!DEBUG 
+!have each processor write its local grid so we can check it's right
+     WRITE(FILENAME,'(A,I3,A)') 'MYPROC_',MYPROC,'.14'
+     OPEN(UNIT=MYPROC+105,FILE=FILENAME)
+     WRITE(MYPROC+105,100) CHUNK,CHUNK_NP
+     DO I = 1,CHUNK_NP 
+       WRITE(MYPROC+105,95) I,X(I),Y(I)
+     ENDDO 
+     DO I = 1,CHUNK 
+       WRITE(MYPROC+105,90) I,3,NNELG(1,I),NNELG(2,I),NNELG(3,I)
+     ENDDO
+100    FORMAT(2I10)
+95     FORMAT(1I10,f10.5,f10.5)
+90     FORMAT(5I10)
+     CLOSE(MYPROC+105)
     RETURN 
   END SUBROUTINE READGRAPH
 !---------------------------------------------------------------------------
