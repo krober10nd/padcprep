@@ -4,17 +4,15 @@ IMPLICIT NONE
 !This module contains most of the global variables, read/write subroutines for
 !the fort.14 and prepares the data for the call to PARMETIS by building all
 !relevant information locally on each MYPROC.  
-!I convert to local node numbers from global to decrease the spareness of the
-!adj and xadj matricies in the call to PARPREP later on and then reconverts by
-!adding back the offset.
+!I convert to local node numbers from global nnum to create a dense xadj and adj
 CHARACTER(len=80)   :: dmy !garbage  
 CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20) :: FILENAME !filename used to write the subdomain grids
-INTEGER             :: NE, NP  !number of elements,nodes    
+INTEGER             :: NE, NP,NE_G,NP_G  !number of elements,nodes    
 INTEGER             :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
 INTEGER             :: NOPE,NETA,NBOU,NVEL !boundary information
-INTEGER,ALLOCATABLE :: G2L(:) 
+INTEGER,ALLOCATABLE :: G2L(:),L2G(:)
 INTEGER,ALLOCATABLE :: NNEL(:,:),NNEL_L(:,:),IEL(:) !local ele conn.
 INTEGER,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_L(:),UQNNUM_G(:)
 REAL(8),ALLOCATABLE :: X(:),Y(:),DP(:),X_G(:),Y_G(:),DP_G(:) !local position, local bathy,etc.
@@ -35,6 +33,8 @@ CONTAINS
     READ(13,*) dmy
 !Read number of elements and nodes
     READ(13,*) NE,NP
+     NE_G = NE 
+     NP_G = NP
 !determine the chunk size
     IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
         CHUNK = NE/NPROC
@@ -131,24 +131,29 @@ CONTAINS
    ENDDO
 ! form a global to local map of the node numbers 
 ! g2l( global node number )=local node number
+! l2g( local node number ) =global node number
 ! so that the local node numbers have consecutive node numbers from 1 to
 ! CHUNK_NP. Otherwise adj and xadj will be sparse.
    ALLOCATE(G2L(MAXVAL(UQNNUM)))
+   ALLOCATE(L2G(CHUNK_NP))
    g2l=0
+   l2g=0
    DO I = 1,CHUNK_NP
-      g2l(UQNNUM(I))=I 
+     g2l(UQNNUM(I))=I 
+   ENDDO
+   DO I = 1,CHUNK_NP 
+     l2g(I)=UQNNUM(I) 
    ENDDO
 ! convert NNEL and INODE to local node numbers 
    DO I = 1,CHUNK_NP 
      UQNNUM_L(I) = g2l(UQNNUM(I))
    ENDDO 
-
    DO I = 1,CHUNK 
      NNEL_L(1,I)=g2l(NNEL(1,I)) 
      NNEL_L(2,I)=g2l(NNEL(2,I)) 
      NNEL_L(3,I)=g2l(NNEL(3,I))
    ENDDO
-!
+
 ! these are assumed to be zero for now
      NOPE = 0 
      NETA = 0 

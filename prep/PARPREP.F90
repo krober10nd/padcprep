@@ -1,8 +1,7 @@
 MODULE PARPREP
 USE MESSENGER  
 IMPLICIT NONE 
-
-   INTEGER,ALLOCATABLE    :: CO_NODES(:,:),XADJ(:),LOCXADJ(:),ADJNCY(:),RADJNCY(:),VWGTS(:),EWGTS(:)  
+   INTEGER,ALLOCATABLE :: CO_NODES(:,:),XADJ(:),ADJNCY_G(:),VWGTS(:),EWGTS(:),VTXDIST(:) 
 CONTAINS 
 
 !---------------------------------------------------------------------
@@ -12,20 +11,20 @@ CONTAINS
 ! **** MOVE THIS PRE? AND MAKE THIS MODULE ONLY FOR CALLING PARMETIS??
 !---------------------------------------------------------------------
 SUBROUTINE BUILD 
-USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
+USE PRE, only : NNEL_L,UQNNUM_L,UQNNUM,CHUNK,CHUNK_NP,g2l,l2g,SORT,NP_G,NE_G
    IMPLICIT NONE 
    INTEGER                :: NE,NP,INODE,JNODE,K,J,IEL,ITOT
    INTEGER                :: MNED,NCOUNT,MNEDLOC,NEDGETOT
    INTEGER,ALLOCATABLE    :: NEDLOC(:)   ! number of edges on each node 
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
+   INTEGER,ALLOCATABLE    :: ADJNCY(:)   ! this is the adjncy but using local nnum
    INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)!temp vectors used for sorting
    LOGICAL                :: FOUND,SYMMETRIC 
-   INTEGER                :: VTXDIST(NPROC+1)
-!
-!******NP and NE are reassigned to the number of local nodes and elements.
-!  adj is built using local node numbers i.e., 1 : NP so this much be switched
+   INTEGER                :: VTXDIST_L(NPROC+1),VTXDIST(NPROC+1)
+   INTEGER                :: NNUMST 
+!  NP and NE are reassigned to the number of local nodes and elements.
+!  adjncy is built using local node numbers i.e., 1 : NP so this must be switched
 !  back to global node numbers at the end before passing to parmetis
-
    NP = CHUNK_NP
    NE = CHUNK 
    ALLOCATE ( NEDGES(NP), NEDLOC(NP) )
@@ -58,11 +57,8 @@ USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
      
         ALLOCATE ( ADJNCY(MNED), EWGTS(MNED) )
         ALLOCATE ( CO_NODES(MNEDLOC,NP) )
-! 
-!-------------------------------------------------------------
+
 !--COMPUTE CO_NODES LISTS AND NUMBER OF EDGES CONTAINING A NODE
-!-------------------------------------------------------------
-!
            NEDGES = 0
         DO IEL=1, NE 
            INODE = NNEL_L(1,IEL)
@@ -87,11 +83,9 @@ USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
            NCOUNT = NEDGES(INODE) + 2
            NEDGES(INODE) = NCOUNT
         ENDDO
-!
-!-------------------------------------------------------------
+
 !  REMOVE REDUNDANCY IN NODE LISTS
-!-------------------------------------------------------------
-! Allocate these sorting vectors based on the max. number of edges that
+! Allocate these sorting vectors (ITVECT) based on the max. number of edges that
 ! intersect a node on the graph. 
 ! This avoids the issue when NP is on the order of the degree of the vertices.
    ALLOCATE ( ITVECT1(MNED),ITVECT2(MNED))
@@ -158,6 +152,8 @@ USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
            VWGTS(INODE) = NEDGES(INODE)
         ENDDO
 ! COMPUTE ADJACENCY LIST OF GRAPH AND ITS EDGE WEIGHTS
+        XADJ= 0 
+        ADJNCY=0
         XADJ(1) = 1
         ITOT = 0
         DO INODE = 1,NP
@@ -169,7 +165,30 @@ USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
            ENDDO
           XADJ(INODE+1) = ITOT+1
         ENDDO
-          PRINT *, "FINISHED BUILDING LOCAL XADJ AND ADJ ON MYPROC", MYPROC
+       ALLOCATE(ADJNCY_G(XADJ(SIZE(XADJ)-1)))
+       ADJNCY_G=0
+       !convert adjncy back to global node numbers and clip trailing zeros        
+       K = 1 
+        DO INODE = 1,ITOT-1 
+           IF(ADJNCY(INODE).EQ.0) CYCLE 
+           ADJNCY_G(K)=L2G(ADJNCY(INODE))
+           K=K+1
+        ENDDO
+       !form vtxdist i.e., the global nnums of MYPROC's resident verticies
+        VTXDIST_L=0 !local  
+        VTXDIST=0   !global 
+        !figure out what nodes are on what processor 
+        NNUMST = MINVAL(UQNNUM) 
+        VTXDIST_L(MYPROC+1)=NNUMST
+        IF(MYPROC.EQ.(NPROC-1)) THEN 
+          VTXDIST_L(NPROC+1)=NP_G + 1 
+        ENDIF
+        !perform MPI_ALLREDUCE to get vtxdist on all PEs
+        CALL MPI_ALLREDUCE(VTXDIST_L,VTXDIST,NPROC+1,MPI_INT,MPI_SUM,MPI_COMM_WORLD,IERR)
+       !  PRINT *, VTXDIST
+       !  PRINT *, "The adjncy array is",ADJNCY_G
+       !  PRINT *, "The xadj array is", xadj
+!      PRINT *, "FINISHED BUILDING LOCAL XADJ AND ADJ ON MYPROC", MYPROC
       RETURN
       END SUBROUTINE BUILD
 
@@ -177,12 +196,27 @@ USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  P A R 
 !---------------------------------------------------------------------
-!  ROUTINE TO CALL PARMETIS 4.0 AFTER THE CALL TO DECOMPOSE_SERIAL
+!  ROUTINE TO CALL PARMETIS 4.0
 !---------------------------------------------------------------------
 !
       SUBROUTINE DECOMPOSE_PAR
          IMPLICIT NONE 
-     
+         INTEGER             :: WGTFLAG,NUMFLAG,NCON,TPWGTS,UBVEC
+         INTEGER,ALLOCATABLE :: OPTS(:),PART(:)
+         INTEGER             :: EDGECUT
+
+         ALLOCATE(part(vtxdist(myproc+2)-vtxdist(myproc+1)))
+!create inputs to parmetis         
+         ALLOCATE(opts(1)) 
+         opts(1)=0
+         wgtflag = 3
+         numflag = 1 
+         ncon = 1 
+         tpwgts = 1/nproc 
+         ubvec = 1.05
+
+         CALL parmetis_v3_partkway(vtxdist,xadj,adjncy_g,vwgts,ewgts,wgtflag  & 
+             ,numflag,ncon,nproc,tpwgts,ubvec,opts,edgecut,part,MPI_COMM_WORLD)           
 
       RETURN
       END SUBROUTINE DECOMPOSE_PAR 
