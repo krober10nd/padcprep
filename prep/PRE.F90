@@ -1,18 +1,25 @@
 MODULE PRE
 USE MESSENGER
 IMPLICIT NONE 
-!This module contains all the global variables, read subroutines for
-!the graph, and the metis libaries.  
+!This module contains most of the global variables, read/write subroutines for
+!the fort.14 and prepares the data for the call to PARMETIS by building all
+!relevant information locally on each MYPROC.  
+!I convert to local node numbers from global to decrease the spareness of the
+!adj and xadj matricies in the call to PARPREP later on and then reconverts by
+!adding back the offset.
 CHARACTER(len=80)   :: dmy !garbage  
 CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
-CHARACTER(LEN=20) :: FILENAME
+CHARACTER(LEN=20) :: FILENAME !filename used to write the subdomain grids
 INTEGER             :: NE, NP  !number of elements,nodes    
-INTEGER             :: CHUNK,CHUNK_NP,LEFTOVER 
-INTEGER,ALLOCATABLE :: NNEL(:,:) !element connectivity 
-INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
-INTEGER,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:) !unique node numbers contained in elements
-REAL(8),ALLOCATABLE :: X(:),Y(:),X_G(:),Y_G(:) !position     
+INTEGER             :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
+INTEGER             :: NOPE,NETA,NBOU,NVEL !boundary information
+INTEGER,ALLOCATABLE :: G2L(:) 
+INTEGER,ALLOCATABLE :: NNEL(:,:),NNEL_L(:,:),IEL(:) !local ele conn.
+INTEGER,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_L(:),UQNNUM_G(:)
+REAL(8),ALLOCATABLE :: X(:),Y(:),DP(:),X_G(:),Y_G(:),DP_G(:) !local position, local bathy,etc.
+!_G denotes a global variable, otherwise it is local i.e., only for MYPROC but
+!still using global node numbers.  
 CONTAINS 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E A D _ G R A P H 
@@ -22,123 +29,165 @@ CONTAINS
   SUBROUTINE READGRAPH                                      
     IMPLICIT NONE 
     INTEGER :: I,J,K,ITEMP !counters
-!
+    INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
     OPEN(13, FILE='fort.14',STATUS='OLD')
-    !--Read title 
+!Read title 
     READ(13,*) dmy
-    !--Read number of elements and nodes
+!Read number of elements and nodes
     READ(13,*) NE,NP
-   
-IF(MYPROC.NE.(NPROC-1)) THEN !if not the last processor 
-    CHUNK = NE/NPROC
-ELSE 
-    CHUNK = NE/NPROC
-    LEFTOVER = NE - CHUNK*NPROC         
-    CHUNK = CHUNK + LEFTOVER 
-ENDIF
-
-IF(MYPROC.EQ.1) THEN 
-  PRINT *, "USING THIS MANY CORES",NPROC
-  PRINT *, "NUMBER OF ELEMENTS:",NE 
-  PRINT *, "NUMBER OF NODES:",NP
-  PRINT *, "CHUNK SIZE",CHUNK
-  PRINT *, "LEFTOVER",leftover
-ENDIF     
-! I choose to allocate 6*CHUNK for DMY_UQNNUM but that is arbitrary
- ALLOCATE(NNEL(3,CHUNK),ITVECT1(3*CHUNK),DMY_UQNNUM(6*CHUNK))
- ! skip nodes the first time, we'll come back
-    DO I = 1,NP 
-        READ(13,*)
-    ENDDO
-    !--Read Element Connectivity Table in chunks
+!determine the chunk size
+    IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
+        CHUNK = NE/NPROC
+    ELSE !if the last PE 
+        CHUNK = NE/NPROC
+        LEFTOVER = NE - (CHUNK*NPROC)         
+        CHUNK = CHUNK + LEFTOVER 
+    ENDIF
+    !IF(MYPROC.EQ.(NPROC-1)) THEN 
+     ! PRINT *, "USING THIS MANY CORES",NPROC
+     ! PRINT *, "NUMBER OF ELEMENTS:",  NE 
+     ! PRINT *, "NUMBER OF NODES:",     NP
+      !PRINT *, "LOCAL ELE. CHUNK SIZE",CHUNK,"ON MYPROC", MYPROC
+!      PRINT *, "LEFTOVER OF",LEFTOVER,"ON MYPROC",MYPROC
+    !ENDIF  
+!allocate some global arrays
+    ALLOCATE(UQNNUM_G(NP),X_G(NP),Y_G(NP),DP_G(NP)) 
+    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),ITVECT1(3*CHUNK))
+! Read nodal connectivity table
+     DO I = 1,NP 
+       READ(13,*) UQNNUM_G(I),X_G(I),Y_G(I),DP_G(I)
+     ENDDO 
+! Read element connectivity table in chunks
+! Here we read in the fort.14 ele. connectivity table by skipping over the parts
+! MYPROC isn't getting. 
    NNEL=0   
-   IF(MYPROC.NE.(NPROC-1)) THEN 
+   IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
     K=1
     DO I = 1,NE
       IF(I.GE.(MYPROC*CHUNK+1).AND.I.LE.((MYPROC*CHUNK)+CHUNK)) THEN 
-        READ(13,*) J,ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
+        READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
         K = K + 1 
       ELSE 
         READ(13,*)
       ENDIF
-     ENDDO
+    ENDDO
    ELSE
    K=1
-     DO I = 1,NE 
-      IF(I.GE.MYPROC*(CHUNK-LEFTOVER)+1) THEN 
-         READ(13,*) J,ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
-         K = K + 1
-      ELSE 
-         READ(13,*)
-      ENDIF
-     ENDDO
+    DO I = 1,NE 
+     IF(I.GE.MYPROC*(CHUNK-LEFTOVER)+1) THEN 
+       READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
+       K = K + 1
+     ELSE 
+       READ(13,*)
+     ENDIF
+    ENDDO
    ENDIF
    CLOSE(13)
-!step 1. find the node numbers associated with the elements that are on myproc
-!step 2. sort them in ascending order 
-!step 3. determine only the unique node numbers
-   !reshape NNEL to vector 
+
+! I chose to allocate 6*CHUNK for DMY_UQNNUM but that is arbitrary
+! We just need a large enough array to make sure we don't exceed
+! the bounds.
+   ALLOCATE(DMY_UQNNUM(6*CHUNK))
+   DMY_UQNNUM(:)=0
+! Steps necessary to determine the local node numbers associated with chunk of
+! elements you just read into MYPROC.
+!step 1. find the node numbers associated with the elements that are on myproc.
+!step 2. sort them in ascending order. 
+!step 3. determine only the unique node numbers from that sorted array.
     ITVECT1=0
     ITVECT1=RESHAPE(NNEL,(/CHUNK*3/))
     CALL SORT(CHUNK*3,ITVECT1)
-    DMY_UQNNUM(:)=0
-   !only keep unique node numbers 
+!only keep unique node numbers 
     J=1
     DO I = 1,SIZE(ITVECT1)-1
-       IF(ITVECT1(I).EQ.ITVECT1(I+1).AND.ITVECT1(I).NE.0) THEN
+      IF(ITVECT1(I).EQ.ITVECT1(I+1).AND.ITVECT1(I).NE.0) THEN
           !skip
-        ELSE !store
-          DMY_UQNNUM(J)=ITVECT1(I)
-          J=J+1
-        ENDIF
+      ELSE !store
+        DMY_UQNNUM(J)=ITVECT1(I)
+        J=J+1
+      ENDIF
     ENDDO
-! have to handle the last entry 
-    IF(ITVECT1(SIZE(ITVECT1)).NE.ITVECT1(SIZE(ITVECT1)-1).AND.ITVECT1(SIZE(ITVECT1)).NE.0) THEN 
+! Handle the last position of the sorted array since we stop one before the end.
      DMY_UQNNUM(J)=ITVECT1(SIZE(ITVECT1))
-     CHUNK_NP=J
-    ELSE 
-     CHUNK_NP=CHUNK_NP-1
-    ENDIF
-    ALLOCATE(UQNNUM(CHUNK_NP))
+     CHUNK_NP=J !This is the number of unique nodes on MYPROC.
+!
+!      PRINT *,"CHUNK_NP IS",CHUNK_NP,"ON MYPROC",MYPROC
+!
+    ALLOCATE(UQNNUM(CHUNK_NP),UQNNUM_L(CHUNK_NP))
+    ALLOCATE(NNEL_L(3,CHUNK))
+    ALLOCATE(X(CHUNK_NP),Y(CHUNK_NP),DP(CHUNK_NP))  
+    
     UQNNUM=0
     K=1 !only keep non zero entries 
     DO I = 1,CHUNK_NP 
-        UQNNUM(K)=DMY_UQNNUM(I) 
-        K=K+1
+      UQNNUM(K)=DMY_UQNNUM(I) 
+      K=K+1
     ENDDO 
-!now read in the node table associated with those elements 
-!rewind the file to the top 
-   ALLOCATE(X(CHUNK_NP),Y(CHUNK_NP))
-   ALLOCATE(X_G(NP),Y_G(NP))
-!
-   OPEN(13,FILE='fort.14',STATUS='OLD')
-   READ(13,*) 
-   READ(13,*) 
-     DO I = 1,NP 
-       READ(13,*) ITEMP,X_G(I),Y_G(I)
-     ENDDO 
-   CLOSE(13)
-   
-   
-   DO I = 1,CHUNK_NP 
+    
+    DO I = 1,CHUNK_NP
      X(I)=X_G(UQNNUM(I))
      Y(I)=Y_G(UQNNUM(I))
-     !PRINT *,I 
+     DP(I)=DP_G(UQNNUM(I))    
+   ENDDO
+! form a global to local map of the node numbers 
+! g2l( global node number )=local node number
+! so that the local node numbers have consecutive node numbers from 1 to
+! CHUNK_NP. Otherwise adj and xadj will be sparse.
+   ALLOCATE(G2L(MAXVAL(UQNNUM)))
+   g2l=0
+   DO I = 1,CHUNK_NP
+      g2l(UQNNUM(I))=I 
+   ENDDO
+! convert NNEL and INODE to local node numbers 
+   DO I = 1,CHUNK_NP 
+     UQNNUM_L(I) = g2l(UQNNUM(I))
    ENDDO 
-!have each processor write its local grid so we can check it's right
+
+   DO I = 1,CHUNK 
+     NNEL_L(1,I)=g2l(NNEL(1,I)) 
+     NNEL_L(2,I)=g2l(NNEL(2,I)) 
+     NNEL_L(3,I)=g2l(NNEL(3,I))
+   ENDDO
+!
+! these are assumed to be zero for now
+     NOPE = 0 
+     NETA = 0 
+     NBOU = 0 
+     NVEL = 0  
+#ifdef DEBUG 
+!have each processor write its local grid so we can check for connectivity
+!problems.
      WRITE(FILENAME,'(A,I3,A)') 'MYPROC_',MYPROC,'.14'
      OPEN(UNIT=MYPROC+105,FILE=FILENAME)
+!write the title 
+     WRITE(MYPROC+105,85)  dmy
+!write the specs of the grid
      WRITE(MYPROC+105,100) CHUNK,CHUNK_NP
+     !write nodes
      DO I = 1,CHUNK_NP 
-       WRITE(MYPROC+105,95) I,X(I),Y(I)
-     ENDDO 
-     DO I = 1,CHUNK 
-       WRITE(MYPROC+105,90) I,3,NNEL(1,I),NNEL(2,I),NNEL(3,I)
+       WRITE(MYPROC+105,95) I,X(I),Y(I),DP(I)
      ENDDO
-100    FORMAT(2I10)
-95     FORMAT(1I10,f10.5,f10.5)
-90     FORMAT(5I10)
+     !write ele 
+     DO I = 1,CHUNK 
+       WRITE(MYPROC+105,90) I,3,NNEL_L(1,I),NNEL_L(2,I),NNEL_L(3,I)
+     ENDDO
+     !write boundary information to EOF
+      WRITE(MYPROC+105,80) NOPE! num open bou 
+      WRITE(MYPROC+105,75) NETA ! num of open bou. nodes 
+      WRITE(MYPROC+105,70) NBOU ! num of land bou 
+      WRITE(MYPROC+105,65) NVEL ! num of land bou. nodes    
+!
+100    FORMAT(2I10) !header 
+95     FORMAT(1I10,f10.5,f10.5,f10.5) !nodal connectivity table
+90     FORMAT(5I10) !element connectivity table
+85     FORMAT(A4)  !agrid
+!boundary information 
+80     FORMAT(1I5,"=Number of open boundaries") 
+75     FORMAT(1I5,"=Total number of open boundary nodes.") 
+70     FORMAT(1I5,"=Number of land boundaries.") 
+65     FORMAT(1I5,"=Total number of land boundary nodes.")
      CLOSE(MYPROC+105)
+#endif DEBUG
     RETURN 
   END SUBROUTINE READGRAPH
 !---------------------------------------------------------------------------

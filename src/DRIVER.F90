@@ -17,10 +17,8 @@ IMPLICIT NONE
 CALL MSG_INIT !start up MPI
 
 CALL READGRAPH 
-!CALL BUILD !build adj and xadj
-! CALL DECOMPOSE_PAR   
+CALL BUILD !build adj and xadj
 !THEN TIMESTEP 
-
 CALL MSG_FINI !shut MPI down  
 
 END PROGRAM Driver

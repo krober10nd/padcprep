@@ -1,5 +1,4 @@
 MODULE PARPREP
-USE PRE
 USE MESSENGER  
 IMPLICIT NONE 
 
@@ -10,67 +9,53 @@ CONTAINS
 !      S U B R O U T I N E   B U I L D 
 !---------------------------------------------------------------------
 !  ROUTINE TO BUILD XADJ AND ADJ 
+! **** MOVE THIS PRE? AND MAKE THIS MODULE ONLY FOR CALLING PARMETIS??
 !---------------------------------------------------------------------
 SUBROUTINE BUILD 
+USE PRE, only : NNEL_L,UQNNUM_L,X,Y,CHUNK,CHUNK_NP,LEFTOVER,g2l,SORT
    IMPLICIT NONE 
-!
-   INTEGER                :: INODE,JNODE,K,J,IEL,ITOT  !COUNTERS
-   INTEGER                :: MNED,NCOUNT  
-   INTEGER                :: MNEDLOC     ! maximum number of edges
-   INTEGER                :: NEDGETOT
-!
+   INTEGER                :: NE,NP,INODE,JNODE,K,J,IEL,ITOT
+   INTEGER                :: MNED,NCOUNT,MNEDLOC,NEDGETOT
    INTEGER,ALLOCATABLE    :: NEDLOC(:)   ! number of edges on each node 
    INTEGER,ALLOCATABLE    :: NEDGES(:)   ! also number of edges on each node,
-   INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)
-   INTEGER,ALLOCATABLE    :: BGN(:)
+   INTEGER,ALLOCATABLE    :: ITVECT1(:),ITVECT2(:)!temp vectors used for sorting
    LOGICAL                :: FOUND,SYMMETRIC 
-!
-   INTEGER                :: CHUNK,LEFTOVER       
    INTEGER                :: VTXDIST(NPROC+1)
 !
-        NE = CHUNK 
-        NP = CHUNK_NP
-!
-        ALLOCATE( NEDGES(NP), NEDLOC(NP) )
-        ALLOCATE ( ITVECT1(NP),ITVECT2(NP) )
-        ALLOCATE ( XADJ(NP+1), VWGTS(NP)) 
+!******NP and NE are reassigned to the number of local nodes and elements.
+!  adj is built using local node numbers i.e., 1 : NP so this much be switched
+!  back to global node numbers at the end before passing to parmetis
+
+   NP = CHUNK_NP
+   NE = CHUNK 
+   ALLOCATE ( NEDGES(NP), NEDLOC(NP) )
+   ALLOCATE ( XADJ(NP+1), VWGTS(NP)  ) 
 !-------------------------------------------------------------
 !  COMPUTES THE TOTAL NUMBER OF EDGES        -->    MNED
 !  AND THE MAX NUMBER OF EDGES FOR ANY NODE  -->    MNEDLOC
 !-------------------------------------------------------------
-!make sure all counter variables are assigned 
-        MNED    =   0  
-        NCOUNT =    0 
-        IEL    =    1 
-        INODE  =    1
-        K      =    1
-        J      =    1
-  
+! build NEDLOC... the number of nodes connected locally to all other nodes       
+        NEDLOC = 0
         MNED = 0
-        DO INODE = 1,NP
-           NEDLOC(INODE) = 0
-        ENDDO
-!
         DO J=1,3
-           DO IEL=1, NE
-              INODE = NNELG(J,IEL)
-              NCOUNT = NEDLOC(INODE) + 2
-              MNED = MNED + 2
+           DO IEL=1,NE !loop over ele's part of sections
+              INODE  = NNEL_L(J,IEL) !this retrieves the node numbers
+              NCOUNT = NEDLOC(INODE) + 2 !since undirected, we represent edge twice
+              MNED   = MNED + 2
               NEDLOC(INODE) = NCOUNT
            ENDDO
         ENDDO
 !
-        MNEDLOC = 0
-        DO INODE=1, NP
-           IF (NEDLOC(INODE).GE. MNEDLOC) THEN 
+       MNEDLOC = 0
+        DO INODE=1,NP
+           IF (NEDLOC(INODE).GE.MNEDLOC) THEN 
               MNEDLOC = NEDLOC(INODE)
            ENDIF  
        ENDDO
 
-IF(MYPROC.EQ.0) THEN
-        print *, "total number of edges = ", MNED
-        print *, "maximum co-nodes for any node = ", MNEDLOC
-ENDIF 
+!        print *, "total number of edges = ", MNED,"ON MYPROC",MYPROC
+!        print *, "maximum co-nodes for any node = ", MNEDLOC,"ON MYPROC",MYPROC
+     
         ALLOCATE ( ADJNCY(MNED), EWGTS(MNED) )
         ALLOCATE ( CO_NODES(MNEDLOC,NP) )
 ! 
@@ -78,30 +63,27 @@ ENDIF
 !--COMPUTE CO_NODES LISTS AND NUMBER OF EDGES CONTAINING A NODE
 !-------------------------------------------------------------
 !
-        DO INODE = 1,NP
-           NEDGES(INODE) = 0
-        ENDDO
-!
+           NEDGES = 0
         DO IEL=1, NE 
-           INODE = NNELG(1,IEL)
-           CO_NODES(NEDGES(INODE)+1,INODE) = NNELG(2,IEL)
-           CO_NODES(NEDGES(INODE)+2,INODE) = NNELG(3,IEL)
+           INODE = NNEL_L(1,IEL)
+           CO_NODES(NEDGES(INODE)+1,INODE) = NNEL_L(2,IEL)
+           CO_NODES(NEDGES(INODE)+2,INODE) = NNEL_L(3,IEL)
            NCOUNT = NEDGES(INODE) + 2
            NEDGES(INODE) = NCOUNT
         ENDDO
 !
-        DO IEL=1, NE  
-           INODE = NNELG(2,IEL)
-           CO_NODES(NEDGES(INODE)+1,INODE) = NNELG(3,IEL)
-           CO_NODES(NEDGES(INODE)+2,INODE) = NNELG(1,IEL)
+        DO IEL=1, NE
+           INODE = NNEL_L(2,IEL)
+           CO_NODES(NEDGES(INODE)+1,INODE) = NNEL_L(3,IEL)
+           CO_NODES(NEDGES(INODE)+2,INODE) = NNEL_L(1,IEL)
            NCOUNT = NEDGES(INODE) + 2
            NEDGES(INODE) = NCOUNT
         ENDDO
 !
-        DO IEL=1, NE 
-           INODE = NNELG(3,IEL)
-           CO_NODES(NEDGES(INODE)+1,INODE) = NNELG(1,IEL)
-           CO_NODES(NEDGES(INODE)+2,INODE) = NNELG(2,IEL)
+        DO IEL=1, NE
+           INODE = NNEL_L(3,IEL)
+           CO_NODES(NEDGES(INODE)+1,INODE) = NNEL_L(1,IEL)
+           CO_NODES(NEDGES(INODE)+2,INODE) = NNEL_L(2,IEL)
            NCOUNT = NEDGES(INODE) + 2
            NEDGES(INODE) = NCOUNT
         ENDDO
@@ -109,48 +91,45 @@ ENDIF
 !-------------------------------------------------------------
 !  REMOVE REDUNDANCY IN NODE LISTS
 !-------------------------------------------------------------
-!
-         NEDGETOT = 0           !  This will be twice number of edges
+! Allocate these sorting vectors based on the max. number of edges that
+! intersect a node on the graph. 
+! This avoids the issue when NP is on the order of the degree of the vertices.
+   ALLOCATE ( ITVECT1(MNED),ITVECT2(MNED))
+         NEDGETOT = 0           
          DO INODE = 1,NP   
            DO J=1, NEDGES(INODE)
-              ITVECT1(J) = CO_NODES(J,INODE)
-           ENDDO
+              ITVECT1(J) = CO_NODES(J,INODE) !this is a temp. vec that stores
+                                             !the nnum that are connected to INODE
+          ENDDO
 !
-           IF (NEDGES(INODE).GT.1) THEN
-             NCOUNT = NEDGES(INODE)
-              CALL SORT(NCOUNT,ITVECT1)
-              JNODE = ITVECT1(1)
-              CO_NODES(1,INODE) = JNODE
+           IF (NEDGES(INODE).GT.1) THEN !if connected to more than one node
+             NCOUNT = NEDGES(INODE) !number of nodes connectd to
+              CALL SORT(NCOUNT,ITVECT1) !sort it in ascending order
+              JNODE = ITVECT1(1) !first node 
+              CO_NODES(1,INODE) = JNODE !sort CO-NODES so all the columns have
+                                        !asending nnum order
               NCOUNT = 1
-              DO J=2, NEDGES(INODE)
+              DO J=2, NEDGES(INODE) !only retain unique nnum
                  IF (ITVECT1(J).NE.JNODE) THEN
                    NCOUNT = NCOUNT + 1
                    JNODE = ITVECT1(J)
                    CO_NODES(NCOUNT,INODE) = JNODE
                  ENDIF
               ENDDO
-            ELSE
-             IF(MYPROC.EQ.0) THEN 
-              PRINT *, "node = ",INODE," is isolated"
-              stop
-             ENDIF    
-            ENDIF
-            NEDGES(INODE) = NCOUNT
-            NEDGETOT = NEDGETOT + NCOUNT
-            IF (NEDGES(INODE) == 0) THEN
-             IF(MYPROC.EQ.0) THEN
-              PRINT *, "inode = ", INODE, " belongs to no edges"
-              stop
-             ENDIF
+            ELSE 
+             PRINT *, "node = ",INODE," is isolated on MYPROC = ", MYPROC
+             stop
+           ENDIF
+          NEDGES(INODE) = NCOUNT
+          NEDGETOT = NEDGETOT + NCOUNT
+           IF (NEDGES(INODE) == 0) THEN
+             PRINT *, "inode = ", INODE, " belongs to no edges on MYPROC = ", MYPROC
             ENDIF
          ENDDO
          NEDGETOT = NEDGETOT/2
-        IF(MYPROC.EQ.0) THEN
-         PRINT *, "edge count = ",NEDGETOT
-        ENDIF
-!
+
 !  CHECK THAT ADJACENCY MATRIX IS SYMMETRIC 
-!
+
        SYMMETRIC = .TRUE.
        DO INODE = 1, NP
        DO J = 1, NEDGES(INODE)
@@ -164,49 +143,33 @@ ENDIF
           ENDDO
           IF (.not. FOUND) THEN
             SYMMETRIC = .FALSE.
-         IF(MYPROC.EQ.0) THEN 
-           print *, "node ",inode," adjacent to ",jnode," but not visa-versa"
-         ENDIF 
+           print *, "node ",inode," adjacent to ",jnode," but not visa-versa on MYPROC", MYPROC
          ENDIF
        ENDDO
        ENDDO
        IF (.NOT. SYMMETRIC) THEN
-         IF(MYPROC.EQ.0) THEN  
-         stop 'bad adjacency matrix: not symmetric!'
-         ENDIF
+          print *, "bad adjacency matrix: not symmetric on MYPROC", MYPROC
+          stop
        ENDIF
-!
-!  COMPUTE WEIGHTS OF THE GRAPH VERTICES
-!
+
+
+! COMPUTE WEIGHTS OF THE GRAPH VERTICES
         DO INODE = 1,NP   
            VWGTS(INODE) = NEDGES(INODE)
         ENDDO
-!
-!--COMPUTE ADJACENCY LIST OF GRAPH AND ITS EDGE WEIGHTS
-!
+! COMPUTE ADJACENCY LIST OF GRAPH AND ITS EDGE WEIGHTS
         XADJ(1) = 1
         ITOT = 0
         DO INODE = 1,NP
-        DO J = 1, NEDGES(INODE)
-           ITOT = ITOT + 1
-           JNODE = CO_NODES(J,INODE)
-           ADJNCY(ITOT) = JNODE
-           EWGTS(ITOT)  = (VWGTS(JNODE)+VWGTS(INODE))
+           DO J = 1, NEDGES(INODE)
+             ITOT = ITOT + 1
+             JNODE = CO_NODES(J,INODE)
+             ADJNCY(ITOT) = JNODE
+             EWGTS(ITOT)  = (VWGTS(JNODE)+VWGTS(INODE))
+           ENDDO
+          XADJ(INODE+1) = ITOT+1
         ENDDO
-        XADJ(INODE+1) = ITOT+1
-        ENDDO
-!
-! DUMP GRAPH FILE
-!        makedirqq(
-!        OPEN(FILE='local_metis_graph.txt',UNIT=99)
-!        WRITE(99,100) NP, NEDGETOT, 11, 1
-!        DO INODE=1, NP
-!           WRITE(99,200) VWGTS(INODE),(CO_NODES(J,INODE), EWGTS(XADJ(INODE)+J-1),J=1,NEDGES(INODE))
-!        ENDDO
-!        CLOSE(99)
-!100    FORMAT(4I10)
-!200    FORMAT(100I10)
-      
+          PRINT *, "FINISHED BUILDING LOCAL XADJ AND ADJ ON MYPROC", MYPROC
       RETURN
       END SUBROUTINE BUILD
 
