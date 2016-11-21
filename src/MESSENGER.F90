@@ -24,7 +24,7 @@ CONTAINS
 !
       CALL MPI_COMM_SIZE (MPI_COMM_WORLD,NPROC,IERR)   ! Get number of procs
       CALL MPI_COMM_RANK (MPI_COMM_WORLD,MYPROC,IERR)      ! Get MPI rank
-!      PRINT*, 'PE', MYPROC, ': online'
+      !PRINT*, 'PE', MYPROC, ': online'
       ALLOCATE(RANKS(NPROC+1))
 
       DO I=1,NPROC

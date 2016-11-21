@@ -1,7 +1,8 @@
 PROGRAM Driver
+
 !
-USE PRE, ONLY: X,Y,NNEL,READGRAPH 
-USE PARPREP, ONLY: BUILD,DECOMPOSE_PAR
+USE PRE, ONLY: READGRAPH 
+USE PARPREP, ONLY: DECOMPOSE_PAR
 USE MESSENGER 
 IMPLICIT NONE
 !---------------------------------------------------------------------
@@ -13,7 +14,6 @@ IMPLICIT NONE
 CALL MSG_INIT !start up MPI
 
 CALL READGRAPH 
-CALL BUILD !build adj and xadj
 CALL DECOMPOSE_PAR !call parmetis
 CALL MSG_FINI !shut MPI down  
 

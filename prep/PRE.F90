@@ -9,12 +9,11 @@ CHARACTER(len=80)   :: dmy !garbage
 CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20) :: FILENAME !filename used to write the subdomain grids
-INTEGER             :: NE, NP,NE_G,NP_G  !number of elements,nodes    
-INTEGER             :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
-INTEGER             :: NOPE,NETA,NBOU,NVEL !boundary information
-INTEGER,ALLOCATABLE :: G2L(:),L2G(:)
-INTEGER,ALLOCATABLE :: NNEL(:,:),NNEL_L(:,:),IEL(:) !local ele conn.
-INTEGER,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_L(:),UQNNUM_G(:)
+INTEGER*8               :: NE, NP,NE_G,NP_G  !number of elements,nodes    
+INTEGER*8               :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
+INTEGER*8             :: NOPE,NETA,NBOU,NVEL !boundary information
+INTEGER*8,ALLOCATABLE :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST_L(:),ELMDIST(:) !local ele conn.
+INTEGER*8,ALLOCATABLE :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_G(:)
 REAL(8),ALLOCATABLE :: X(:),Y(:),DP(:),X_G(:),Y_G(:),DP_G(:) !local position, local bathy,etc.
 !_G denotes a global variable, otherwise it is local i.e., only for MYPROC but
 !still using global node numbers.  
@@ -26,7 +25,7 @@ CONTAINS
 !---------------------------------------------------------------------
   SUBROUTINE READGRAPH                                      
     IMPLICIT NONE 
-    INTEGER :: I,J,K,ITEMP !counters
+    INTEGER :: I,J,K,O,ITEMP !counters
     INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
     OPEN(13, FILE='fort.14',STATUS='OLD')
 !Read title 
@@ -43,16 +42,16 @@ CONTAINS
         LEFTOVER = NE - (CHUNK*NPROC)         
         CHUNK = CHUNK + LEFTOVER 
     ENDIF
-    !IF(MYPROC.EQ.(NPROC-1)) THEN 
-     ! PRINT *, "USING THIS MANY CORES",NPROC
-     ! PRINT *, "NUMBER OF ELEMENTS:",  NE 
-     ! PRINT *, "NUMBER OF NODES:",     NP
-      !PRINT *, "LOCAL ELE. CHUNK SIZE",CHUNK,"ON MYPROC", MYPROC
-!      PRINT *, "LEFTOVER OF",LEFTOVER,"ON MYPROC",MYPROC
-    !ENDIF  
+!     IF(MYPROC.EQ.(NPROC-1)) THEN 
+!       PRINT *, "USING THIS MANY CORES",NPROC
+!       PRINT *, "NUMBER OF ELEMENTS:",  NE 
+!       PRINT *, "NUMBER OF NODES:",     NP
+!       PRINT *, "LOCAL ELE. CHUNK SIZE",CHUNK,"ON MYPROC", MYPROC
+!       PRINT *, "LEFTOVER OF",LEFTOVER,"ON MYPROC",MYPROC
+!    ENDIF  
 !allocate some global arrays
     ALLOCATE(UQNNUM_G(NP),X_G(NP),Y_G(NP),DP_G(NP)) 
-    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),ITVECT1(3*CHUNK))
+    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),ITVECT1(3*CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
 ! Read nodal connectivity table
      DO I = 1,NP 
        READ(13,*) UQNNUM_G(I),X_G(I),Y_G(I),DP_G(I)
@@ -60,12 +59,21 @@ CONTAINS
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
-   NNEL=0   
+   NNEL=0  
+   EIND=0
+   EPTR=0 
    IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
-    K=1
+    K=1 
+    O=1 
     DO I = 1,NE
       IF(I.GE.(MYPROC*CHUNK+1).AND.I.LE.((MYPROC*CHUNK)+CHUNK)) THEN 
         READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
+        EIND(O)=NNEL(1,K)
+        O=O+1 
+        EIND(O)=NNEL(2,K)
+        O=O+1  
+        EIND(O)=NNEL(3,K)
+        O=O+1 
         K = K + 1 
       ELSE 
         READ(13,*)
@@ -73,9 +81,16 @@ CONTAINS
     ENDDO
    ELSE
    K=1
+   O=1
     DO I = 1,NE 
      IF(I.GE.MYPROC*(CHUNK-LEFTOVER)+1) THEN 
        READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
+       EIND(O)=NNEL(1,K) 
+       O=O+1 
+       EIND(O)=NNEL(2,K) 
+       O=O+1 
+       EIND(O)=NNEL(3,K) 
+       O=O+1 
        K = K + 1
      ELSE 
        READ(13,*)
@@ -83,7 +98,22 @@ CONTAINS
     ENDDO
    ENDIF
    CLOSE(13)
+   K=1
+   DO I = 1,SIZE(EIND)+1,3 
+     EPTR(K)=I
+     K=K+1 
+   ENDDO
 
+   ALLOCATE(ELMDIST(NPROC+1)) 
+   ELMDIST=0 
+   DO I = 0,NPROC
+     ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
+   ENDDO
+   !PRINT *, ELMDIST_L," ON MYPROC ", MYPROC
+   !CALL MPI_ALLREDUCE(ELMDIST_L,ELMDIST,NPROC+1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,IERR)
+   ELMDIST(NPROC+1)=NE_G+1 
+   !PRINT *, ELMDIST 
+! Determine the unique node numbers on MYPROC
 ! I chose to allocate 6*CHUNK for DMY_UQNNUM but that is arbitrary
 ! We just need a large enough array to make sure we don't exceed
 ! the bounds.
@@ -110,48 +140,22 @@ CONTAINS
 ! Handle the last position of the sorted array since we stop one before the end.
      DMY_UQNNUM(J)=ITVECT1(SIZE(ITVECT1))
      CHUNK_NP=J !This is the number of unique nodes on MYPROC.
-!
-!      PRINT *,"CHUNK_NP IS",CHUNK_NP,"ON MYPROC",MYPROC
-!
-    ALLOCATE(UQNNUM(CHUNK_NP),UQNNUM_L(CHUNK_NP))
-    ALLOCATE(NNEL_L(3,CHUNK))
+! chunk_np is the number of nodes on each partition      
+    ALLOCATE(UQNNUM(CHUNK_NP))
     ALLOCATE(X(CHUNK_NP),Y(CHUNK_NP),DP(CHUNK_NP))  
-    
+!uqnnum is the the unique node numbers on each partition 
     UQNNUM=0
     K=1 !only keep non zero entries 
     DO I = 1,CHUNK_NP 
       UQNNUM(K)=DMY_UQNNUM(I) 
       K=K+1
     ENDDO 
-    
+   
+   !get the local nodes position and bathy on each PE
     DO I = 1,CHUNK_NP
      X(I)=X_G(UQNNUM(I))
      Y(I)=Y_G(UQNNUM(I))
      DP(I)=DP_G(UQNNUM(I))    
-   ENDDO
-! form a global to local map of the node numbers 
-! g2l( global node number )=local node number
-! l2g( local node number ) =global node number
-! so that the local node numbers have consecutive node numbers from 1 to
-! CHUNK_NP. Otherwise adj and xadj will be sparse.
-   ALLOCATE(G2L(MAXVAL(UQNNUM)))
-   ALLOCATE(L2G(CHUNK_NP))
-   g2l=0
-   l2g=0
-   DO I = 1,CHUNK_NP
-     g2l(UQNNUM(I))=I 
-   ENDDO
-   DO I = 1,CHUNK_NP 
-     l2g(I)=UQNNUM(I) 
-   ENDDO
-! convert NNEL and INODE to local node numbers 
-   DO I = 1,CHUNK_NP 
-     UQNNUM_L(I) = g2l(UQNNUM(I))
-   ENDDO 
-   DO I = 1,CHUNK 
-     NNEL_L(1,I)=g2l(NNEL(1,I)) 
-     NNEL_L(2,I)=g2l(NNEL(2,I)) 
-     NNEL_L(3,I)=g2l(NNEL(3,I))
    ENDDO
 
 ! these are assumed to be zero for now
@@ -159,40 +163,40 @@ CONTAINS
      NETA = 0 
      NBOU = 0 
      NVEL = 0  
-#ifdef DEBUG 
-!have each processor write its local grid so we can check for connectivity
-!problems.
-     WRITE(FILENAME,'(A,I3,A)') 'MYPROC_',MYPROC,'.14'
-     OPEN(UNIT=MYPROC+105,FILE=FILENAME)
-!write the title 
-     WRITE(MYPROC+105,85)  dmy
-!write the specs of the grid
-     WRITE(MYPROC+105,100) CHUNK,CHUNK_NP
-     !write nodes
-     DO I = 1,CHUNK_NP 
-       WRITE(MYPROC+105,95) I,X(I),Y(I),DP(I)
-     ENDDO
-     !write ele 
-     DO I = 1,CHUNK 
-       WRITE(MYPROC+105,90) I,3,NNEL_L(1,I),NNEL_L(2,I),NNEL_L(3,I)
-     ENDDO
-     !write boundary information to EOF
-      WRITE(MYPROC+105,80) NOPE! num open bou 
-      WRITE(MYPROC+105,75) NETA ! num of open bou. nodes 
-      WRITE(MYPROC+105,70) NBOU ! num of land bou 
-      WRITE(MYPROC+105,65) NVEL ! num of land bou. nodes    
-!
-100    FORMAT(2I10) !header 
-95     FORMAT(1I10,f10.5,f10.5,f10.5) !nodal connectivity table
-90     FORMAT(5I10) !element connectivity table
-85     FORMAT(A4)  !agrid
-!boundary information 
-80     FORMAT(1I5,"=Number of open boundaries") 
-75     FORMAT(1I5,"=Total number of open boundary nodes.") 
-70     FORMAT(1I5,"=Number of land boundaries.") 
-65     FORMAT(1I5,"=Total number of land boundary nodes.")
-     CLOSE(MYPROC+105)
-#endif DEBUG
+!#ifdef DEBUG 
+!!have each processor write its local grid so we can check for connectivity
+!!problems.
+!     WRITE(FILENAME,'(A,I3,A)') 'MYPROC_',MYPROC,'.14'
+!     OPEN(UNIT=MYPROC+105,FILE=FILENAME)
+!!write the title 
+!     WRITE(MYPROC+105,85)  dmy
+!!write the specs of the grid
+!     WRITE(MYPROC+105,100) CHUNK,CHUNK_NP
+!     !write nodes
+!     DO I = 1,CHUNK_NP 
+!       WRITE(MYPROC+105,95) I,X(I),Y(I),DP(I)
+!     ENDDO
+!     !write ele 
+!     DO I = 1,CHUNK 
+!       WRITE(MYPROC+105,90) I,3,NNEL_L(1,I),NNEL_L(2,I),NNEL_L(3,I)
+!     ENDDO
+!     !write boundary information to EOF
+!      WRITE(MYPROC+105,80) NOPE! num open bou 
+!      WRITE(MYPROC+105,75) NETA ! num of open bou. nodes 
+!      WRITE(MYPROC+105,70) NBOU ! num of land bou 
+!      WRITE(MYPROC+105,65) NVEL ! num of land bou. nodes    
+!!
+!100    FORMAT(2I10) !header 
+!95     FORMAT(1I10,f10.5,f10.5,f10.5) !nodal connectivity table
+!90     FORMAT(5I10) !element connectivity table
+!85     FORMAT(A4)  !agrid
+!!boundary information 
+!80     FORMAT(1I5,"=Number of open boundaries") 
+!75     FORMAT(1I5,"=Total number of open boundary nodes.") 
+!70     FORMAT(1I5,"=Number of land boundaries.") 
+!65     FORMAT(1I5,"=Total number of land boundary nodes.")
+!     CLOSE(MYPROC+105)
+!#endif DEBUG
     RETURN 
   END SUBROUTINE READGRAPH
 !---------------------------------------------------------------------------
