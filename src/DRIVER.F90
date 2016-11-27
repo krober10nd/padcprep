@@ -12,7 +12,6 @@ IMPLICIT NONE
 !---------------------------------------------------------------------
 
 CALL MSG_INIT !start up MPI
-
 CALL READGRAPH 
 CALL DECOMPOSE_PAR !call parmetis
 CALL MSG_FINI !shut MPI down  
