@@ -1,6 +1,8 @@
 MODULE PARPREP
 USE PRE,ONLY: ELMDIST,EPTR,EIND,CHUNK,NP_G
 IMPLICIT NONE
+INTEGER,ALLOCATABLE :: PART_G(:),VTXDIST(:)
+INTEGER,POINTER     :: XADJ2(:),ADJNCY2(:)
 CONTAINS 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  P A R 
@@ -15,12 +17,11 @@ CONTAINS
          INTEGER             :: WGTFLAG,NUMFLAG,NCON,EDGECUT,NPARTS 
          INTEGER             :: I,O
          INTEGER             :: NCOMMONNODES 
-         INTEGER,ALLOCATABLE :: OPTS(:),EPART(:),PART_G(:),PART_GLoc(:),ELMWGT(:) 
+         INTEGER,ALLOCATABLE :: OPTS(:),EPART(:),PART_GLoc(:),ELMWGT(:) 
          REAL(8)             :: UBVEC,T1,T2
          REAL(8),ALLOCATABLE :: TPWGTS(:,:)
 ! for building the graph in parallel 
          TYPE(C_PTR),ALLOCATABLE :: PTRXADJ(:),PTRADJNCY(:)
-         INTEGER,POINTER :: XADJ2(:),ADJNCY2(:)
 ! api calls from the static lib
          EXTERNAL ParMETIS_V3_PartMeshKway
          EXTERNAL ParMETIS_V3_Mesh2Dual
@@ -86,7 +87,36 @@ CONTAINS
      CALL C_F_POINTER(PTRADJNCY(1),ADJNCY2,[XADJ2(CHUNK+1)-1])
      IF(MYPROC.EQ.0) THEN 
        PRINT *, "BUILT DUAL GRAPH" 
+       !PRINT *, XADJ2 
+       !PRINT *, ADJNCY2
      ENDIF
+     ALLOCATE(VTXDIST(NPROC+1))
+     VTXDIST = ELMDIST ! note that elmdist is identically vtxdist for the dual
+                       ! graph 
+     !*** now build the vtxwgts locally
+
   RETURN 
    END SUBROUTINE DECOMPOSE_PAR 
+
+
+!---------------------------------------------------------------------
+!      S U B R O U T I N E   P R E P   G R I D 
+!---------------------------------------------------------------------
+!  CREATE AN INDUVIDUAL DIRECTORY FOR EACH RANK AND PLACE THE PORTION OF THE
+!  GRID IN EACH DIRECTORY
+!---------------------------------------------------------------------
+   SUBROUTINE PREPGRID
+   USE MESSENGER 
+   IMPLICIT NONE 
+
+   INTEGER :: I,PE
+   CHARACTER(LEN=10) :: DIRNAME,PENUM
+
+   ! EACH RANK MAKES IT OWN DIR CALLED PE RANK#
+         PENUM  = 'PE0000'
+         CALL IWRITE(PENUM,3,6,MYPROC)
+         CALL MAKEDIRQQ(PENUM)
+
+  RETURN
+   END SUBROUTINE 
 END MODULE PARPREP  

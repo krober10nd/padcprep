@@ -14,6 +14,7 @@ INTEGER             :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE   :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
 INTEGER,ALLOCATABLE   :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_G(:)
 REAL(8),ALLOCATABLE :: X(:),Y(:),DP(:),X_G(:),Y_G(:),DP_G(:) !local position, local bathy,etc.
+INTEGER,ALLOCATABLE  :: VTXWGTS_LOC(:)
 CONTAINS 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E A D _ G R A P H 
@@ -25,6 +26,7 @@ CONTAINS
     INTEGER :: I,J,K,O,ITEMP !counters
     INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
     REAL(8) :: T1,T2
+    INTEGER,ALLOCATABLE :: VTXWGTS_G(:)
     OPEN(13, FILE='fort.14',STATUS='OLD')
 !Read title 
     READ(13,*) dmy
@@ -118,6 +120,30 @@ ENDIF
 IF(MYPROC.EQ.0) THEN 
   PRINT *, "FINISHED BUILDING EIND, ELMDIST ..."
 ENDIF
+
+!***If 1st iter. then read in the vertex weights input file 
+! since vtxdist is the same as elmdist 
+! we know that the node numbers are contiguous
+  ALLOCATE(VTXWGTS_G(NP_G))
+  ALLOCATE(VTWGTS_LOC(ELMDIST(NPROC+1):ELMDIST(NPROC+2)-1))
+! IDEA IS THAT FILE I/O IS SLOWER THAN NETWORK
+IF(MYPROC.EQ.0) THEN 
+  OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
+  DO I = 1 : NP 
+   READ(13,*) VTXWGTS_G(:)
+  ENDDO
+  CLOSE(13) 
+ENDIF 
+  CALL MPI_BCAST(VTXWGTS_G,NP,MPI_INT,0,MPI_COMM_WORLD,IERR)
+J=1
+DO I = 1 : NP
+  IF(I.EQ.ELMDIST(NPROC+1).and.LT.ELMDIST(NPROC+2) THEN 
+     VTXWGTS_LOC(J)=VTXWGTS_G(I)
+     J=J+1
+  ELSE  
+  ENDIF
+ENDDO  
+
 
 !#ifdef DEBUG 
 !!have each processor write its local grid so we can check for connectivity
