@@ -10,10 +10,12 @@ CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
 INTEGER               :: NE, NP,NE_G,NP_G  !number of elements,nodes    
+INTEGER,ALLOCATABLE   :: X_G(:),Y_G(:),DP_G(:)
 INTEGER               :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
 INTEGER               :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE   :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
-INTEGER,ALLOCATABLE   :: VTXWGTS_G(:) !these are defined for the elements
+INTEGER,ALLOCATABLE   :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
+INTEGER,ALLOCATABLE   :: VSIZES_LOC(:)
 !
 INTEGER               :: IT ! time step counter 
 
@@ -53,6 +55,10 @@ CONTAINS
     IF(MYPROC.EQ.0) THEN 
       DO I = 1,NP 
         READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
+      ENDDO
+    ELSE 
+      DO I = 1,NP 
+        READ(13,*)
       ENDDO 
     ENDIF
   CALL MPI_BCAST(X_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
@@ -128,34 +134,32 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "FINISHED BUILDING EIND, ELMDIST ..."
 ENDIF
 
-! number of dual graph nodes/eles on each rank
-CHUNK_NP = ELMDIST(MYPROC+2)-1 - ELMDIST(MYPROC-1)
 
 ! read in vertex weights from input file in working dir
   ALLOCATE(VTXWGTS_G(NE_G))
-  ALLOCATE(VTWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
+  ALLOCATE(VTXWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
 ! IDEA IS THAT FILE I/O IS SLOWER THAN NETWORK
 IF(MYPROC.EQ.0) THEN 
   OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
-  DO I = 1 : NE_G 
+  DO I = 1,NE_G 
     READ(13,*) VTXWGTS_G(I)
   ENDDO
   CLOSE(13) 
 ENDIF 
-! broadcast the vertex weights to all ranks
+! broadcast the global vertex weights to all ranks
   CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
-!localize the vertex weights on each rank, this is only done for IT==1 
+!localize the vertex weights on each rank for the naive decomp, this is only done for IT==1 
 J=1
-DO I = 1 : NE_G
-  IF(I.EQ.ELMDIST(NPROC+1).and.LT.ELMDIST(NPROC+2) THEN 
+DO I = 1,NE_G
+  IF(I.GE.ELMDIST(MYPROC+1).and.I.LT.ELMDIST(MYPROC+2)) THEN 
      VTXWGTS_LOC(J)=VTXWGTS_G(I)
      J=J+1
   ELSE  
   ENDIF
 ENDDO  
-
 ALLOCATE(VSIZES_LOC(CHUNK)) 
-VSIZE_LOC = 1 !this never changes 
+VSIZES_LOC = 1 !this never changes so no need to localize
+
 
 !#ifdef DEBUG 
 !!have each processor write its local grid so we can check for connectivity
