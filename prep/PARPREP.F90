@@ -1,8 +1,20 @@
 MODULE PARPREP
-USE PRE,ONLY: ELMDIST,EPTR,EIND,CHUNK,NP_G
+! interface for parmetis adaptive repartition and redistributes nodal
+! information
+USE PRE,ONLY: VTXWGTS_G,IT,ELMDIST,EPTR,EIND,CHUNK,CHUNK_NP,NP_G,NE_G,X_G,Y_G,DP_G
+USE MESSENGER
 IMPLICIT NONE
-INTEGER,ALLOCATABLE :: PART_G(:),VTXDIST(:)
-INTEGER,POINTER     :: XADJ2(:),ADJNCY2(:)
+
+         INTEGER,SAVE        :: PART(CHUNK),PART_G(NP_G),PART_GLoc(NP_G) !partition labels for dualg graph nodes and FEM nodes
+         INTEGER,POINTER,SAVE:: XADJ2(:),ADJNCY2(:) ! dual graph structure 
+         INTEGER,SAVE        :: WGTFLAG,NUMFLAG,NCON,EDGECUT,NPARTS ! args for parmetis
+         INTEGER,SAVE        :: NCOMMONNODES !args for parmetis 
+         INTEGER,ALLOCATABLE,SAVE :: OPTS(:),EPART(:),ELMWGT(:),ADJWGT(:),VTXDIST(:) ! args for parmetis
+         INTEGER,ALLOCATABLE      :: X(:),Y(:),DP(:),G2L(:) !localized nodal attribute data 
+         REAL(8),SAVE             :: UBVEC,ITR !args for parmetis 
+         REAL(8),ALLOCATABLE,SAVE :: TPWGTS(:,:) !args for parmetis
+         TYPE(C_PTR),ALLOCATABLE,SAVE :: PTRXADJ(:),PTRADJNCY(:) !args for parmetis 
+
 CONTAINS 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   D E C O M P O S E  P A R 
@@ -10,65 +22,68 @@ CONTAINS
 !  ROUTINE TO CALL PARMETIS 4.0
 !---------------------------------------------------------------------
 
-      SUBROUTINE DECOMPOSE_PAR
-      USE MESSENGER 
+ SUBROUTINE DECOMPOSE_PAR(VTXWGTS_LOC,VSIZES_LOC)
       USE ISO_C_BINDING 
          IMPLICIT NONE 
-         INTEGER             :: WGTFLAG,NUMFLAG,NCON,EDGECUT,NPARTS 
-         INTEGER             :: I,O
-         INTEGER             :: NCOMMONNODES 
-         INTEGER,ALLOCATABLE :: OPTS(:),EPART(:),PART_GLoc(:),ELMWGT(:) 
-         REAL(8)             :: UBVEC,T1,T2
-         REAL(8),ALLOCATABLE :: TPWGTS(:,:)
-! for building the graph in parallel 
-         TYPE(C_PTR),ALLOCATABLE :: PTRXADJ(:),PTRADJNCY(:)
-! api calls from the static lib
-         EXTERNAL ParMETIS_V3_PartMeshKway
+      
+         INTEGER,DIMENSION(:),INTENT(INOUT) :: VTXWGTS_LOC,VSIZE_LOC !these are used for repartitioning and are also modified within this subroutine
+         INTEGER                            :: I,J,O,T1,T2
+         ! api calls from the static lib
          EXTERNAL ParMETIS_V3_Mesh2Dual
-         EDGECUT=0 
-         ALLOCATE(EPART(CHUNK)) !partition labels for locally stored elements 
-         ALLOCATE(PART_G(NP_G)) ! partition labels global node numbers
-         ALLOCATE(PART_GLoc(NP_G)) !used in the all reduce op
-         EPART=-1
-         PART_G=-1
-         PART_GLoc=-1
-         ALLOCATE(ELMWGT(CHUNK)) 
+         EXTERNAL ParMETIS_V3_AdaptiveRepart 
+         EDGECUT=0
+ 
+     IF(IT.EQ.1) THEN
+         PART_G=-1 !this are based on FEM nodes 
+         PART_GLoc=-1 !this is based on FEM nodes
+         PART=-1 !this is for the dual graph nodes 
          ALLOCATE(OPTS(3)) 
          !!! opts to pass to parmetis
-         ELMWGT=1 ! this is ignored since wgtflag 
-         WGTFLAG=0 !use edge weights? 
+         WGTFLAG=2 !use dualg graph vertex weights only 
          NUMFLAG=1 !fortran style 
+         
+         ! build the dual graph 
+         ALLOCATE(PTRXADJ(1))
+         ALLOCATE(PTRADJNCY(1))
+        CALL ParMETIS_V3_Mesh2Dual(ELMDIST,EPTR,EIND,NUMFLAG,NCOMMONNODES,PTRXADJ,PTRADJNCY,MPI_COMM_WORLD)
+        CALL C_F_POINTER(PTRXADJ(1),XADJ2,[CHUNK+1])
+        CALL C_F_POINTER(PTRADJNCY(1),ADJNCY2,[XADJ2(CHUNK+1)-1])
          IF(MYPROC.EQ.0) THEN 
-           PRINT *, "ENTER NUMBER OF PARTITIONS " 
-           READ (*,*) NPARTS
+           PRINT *, "SUCCESS...BUILT DUAL GRAPH" 
          ENDIF
-         !NPARTS=480
-         CALL MPI_BCAST(NPARTS,1,MPI_INT,0,MPI_COMM_WORLD,IERR)
+         ALLOCATE(ADJWGT(XADJ2(CHUNK+1)-1)) !edge weights
+         ADJWGT =1 ! anyway, this is ignored because of the wgtflag==2
+         ALLOCATE(VTXDIST(NPROC+1)) ! distribution of verticies on each rank
+         VTXDIST = ELMDIST ! note that elmdist is identically vtxdist for the dual graph
+         NPARTS = NPROC ! this is coupled for parmetis         
          NCON=1 !number of vertex constraints
          UBVEC=1.05D0
          ALLOCATE(TPWGTS(NCON,NPARTS))  
          TPWGTS=1D0/DBLE(NPARTS) !partitions have weights that sum to one
          NCOMMONNODES=2 !triangular mesh 
          OPTS(1)=0 !default options used 
-         CALL CPU_TIME(T1)
-         CALL ParMETIS_V3_PartMeshKway(ELMDIST,EPTR,EIND,ELMWGT,WGTFLAG,NUMFLAG,NCON,NCOMMONNODES,NPARTS,TPWGTS,UBVEC,OPTS,EDGECUT,EPART,MPI_COMM_WORLD)
-         CALL CPU_TIME(T2)
+         ITR = 1000 
+! first call to parmetis 
+CALL CPU_TIME(T1)
+      !CALL ParMETIS_V3_PartMeshKway(ELMDIST,EPTR,EIND,ELMWGT,WGTFLAG,NUMFLAG,NCON,NCOMMONNODES,NPARTS,TPWGTS,UBVEC,OPTS,EDGECUT,EPART,MPI_COMM_WORLD)
+CALL ParMETIS_V3_AdaptiveRepart(VTXDIST,XADJ2,ADJNCY2,VTXWGT_LOC,VSIZES_LOC,ADJWGT,WGTFLAG,NUMFLAG,NCON,NPARTS,TPWGTS,UBVEC,ITR,OPTS,EDGECUT,PART,MPI_COMM_WORLD) 
+CALL CPU_TIME(T2)
          IF(MYPROC.EQ.0) THEN 
            PRINT *, "ParMeTiS CUT THIS MANY EDGES ", EDGECUT 
            PRINT *, "In ", T2-T1
          ENDIF
-
-      ! label vertices associated with elements 
+! convert dual graph vertices to rank labels for the FEM nodes 
        O=1
       DO I = 1,CHUNK
-          PART_GLoc(EIND(O))=EPART(I) 
+          PART_GLoc(EIND(O))=PART(I) 
           O=O+1 
-          PART_GLoc(EIND(O))=EPART(I)
+          PART_GLoc(EIND(O))=PART(I)
           O=O+1 
-          PART_GLoc(EIND(O))=EPART(I)
+          PART_GLoc(EIND(O))=PART(I)
           O=O+1 
       ENDDO
-      CALL MPI_ALLREDUCE(PART_GLoc,PART_G,NP_G,MPI_INT,MPI_MAX,MPI_COMM_WORLD,IERR)
+! use mpi_max to reduce to a global vector of partition labels by taking the max 
+CALL MPI_ALLREDUCE(PART_GLoc,PART_G,NP_G,MPI_INT,MPI_MAX,MPI_COMM_WORLD,IERR)
       IF(EDGECUT.GT.0) THEN 
         IF(MYPROC.EQ.0) THEN 
            print *, "writing mesh partition to file: partmesh.txt"
@@ -79,25 +94,84 @@ CONTAINS
           CLOSE(990)
         ENDIF
       ENDIF
-     ! build the graph 
-     ALLOCATE(PTRXADJ(1))
-     ALLOCATE(PTRADJNCY(1))
-     CALL ParMETIS_V3_Mesh2Dual(ELMDIST,EPTR,EIND,NUMFLAG,NCOMMONNODES,PTRXADJ,PTRADJNCY,MPI_COMM_WORLD)
-     CALL C_F_POINTER(PTRXADJ(1),XADJ2,[CHUNK+1])
-     CALL C_F_POINTER(PTRADJNCY(1),ADJNCY2,[XADJ2(CHUNK+1)-1])
-     IF(MYPROC.EQ.0) THEN 
-       PRINT *, "BUILT DUAL GRAPH" 
-       !PRINT *, XADJ2 
-       !PRINT *, ADJNCY2
-     ENDIF
-     ALLOCATE(VTXDIST(NPROC+1))
-     VTXDIST = ELMDIST ! note that elmdist is identically vtxdist for the dual
-                       ! graph 
-     !*** now build the vtxwgts locally
 
+ELSE !IT.NE.1 
+! inherited vertex weights are the only thing that has changed from IT-1 to IT 
+CALL CPU_TIME(T1)
+CALL ParMETIS_V3_AdaptiveRepart(VTXDIST,XADJ2,ADJNCY2,VTXWGT_LOC,VSIZE_LOC,ADJWGT,WGTFLAG,NUMFLAG,NCON,NPARTS,TPWGTS,UBVEC,ITR,OPTS,EDGECUT,PART,MPI_COMM_WORLD) 
+CALL CPU_TIME(T2)
+         IF(MYPROC.EQ.0) THEN 
+           PRINT *, "ParMeTiS CUT THIS MANY EDGES ", EDGECUT, " at IT = ",IT 
+           PRINT *, "In ", T2-T1
+         ENDIF
+! convert dual graph vertices to rank labels for the FEM nodes 
+       O=1
+      DO I = 1,CHUNK
+          PART_GLoc(EIND(O))=PART(I) 
+          O=O+1 
+          PART_GLoc(EIND(O))=PART(I)
+          O=O+1 
+          PART_GLoc(EIND(O))=PART(I)
+          O=O+1 
+      ENDDO
+!
+CALL MPI_ALLREDUCE(PART_GLoc,PART_G,NP_G,MPI_INT,MPI_MAX,MPI_COMM_WORLD,IERR)
+
+      IF(EDGECUT.GT.0) THEN 
+        IF(MYPROC.EQ.0) THEN 
+           print *, "writing mesh partition to file: partmesh.txt"
+           OPEN(990,FILE='partmesh.txt')
+           DO I=1, NP_G
+             WRITE(990,*) PART_G(I)
+           ENDDO
+          CLOSE(990)
+        ENDIF
+      ENDIF
+ENDIF 
+
+
+!determine how many nodes are on each rank now 
+O=1
+DO I = 1,NP_G 
+  IF(PART_G(I).EQ.MYPROC+1) THEN 
+    O = O + 1 !this is the number of nodes associated with each rank  
+  ENDIF
+ENDDO
+
+!localize nodal data, vertex weights and create a global to local
+!element map 
+ 
+!these must be deallocated at the end of the timestep
+! and reallocated here with the new size
+ALLOCATE(G2L(O),X(O),Y(O),DP(O))
+! the global X,Y and DP are already in memory.
+! identify the nodes that are associated with each rank
+    O=1 
+    DO I = 1,NP_G
+      IF(PART_G(I).EQ.MYPROC+1) THEN !DATA BELONGS TO MYPROC 
+        X(O)=X_G(I)
+        Y(O)=Y_G(I)
+        DP(O)=DP_G(I)
+        VTXWGTS_LOC(O)=VTXWGTS_G(PART_G(I)) 
+        G2L(J)=O !global to local node map 
+        O=O+1
+      ENDIF
+    ENDDO 
   RETURN 
-   END SUBROUTINE DECOMPOSE_PAR 
+END SUBROUTINE DECOMPOSE_PAR 
 
+!---------------------------------------------------------------------
+!      S U B R O U T I N E   F R E E    M E M
+!---------------------------------------------------------------------
+!  deallocate arrays that store local data   
+!---------------------------------------------------------------------
+SUBROUTINE FREE_MEM 
+USE MESSENGER 
+IMPLICIT NONE 
+   deallocate(G2L,DP,X,Y) ! this frees up the memory associated with the
+                          ! localized nodal attributes
+RETURN
+END SUBROUTINE
 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   P R E P   G R I D 
@@ -114,8 +188,6 @@ CONTAINS
 
    ! EACH RANK MAKES IT OWN DIR CALLED PE RANK#
          PENUM  = 'PE0000'
-         CALL IWRITE(PENUM,3,6,MYPROC)
-         CALL MAKEDIRQQ(PENUM)
 
   RETURN
    END SUBROUTINE 

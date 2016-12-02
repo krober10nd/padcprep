@@ -4,17 +4,19 @@ IMPLICIT NONE
 !This module contains most of the global variables, read/write subroutines for
 !the fort.14 and prepares the data for the call to PARMETIS by building all
 !relevant information locally on each MYPROC.  
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 CHARACTER(len=80)   :: dmy !garbage  
 CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
-CHARACTER(LEN=20) :: FILENAME !filename used to write the subdomain grids
+CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
 INTEGER               :: NE, NP,NE_G,NP_G  !number of elements,nodes    
 INTEGER               :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
-INTEGER             :: NOPE,NETA,NBOU,NVEL !boundary information
+INTEGER               :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE   :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
-INTEGER,ALLOCATABLE   :: DMY_UQNNUM(:),UQNNUM(:),UQNNUM_G(:)
-REAL(8),ALLOCATABLE :: X(:),Y(:),DP(:),X_G(:),Y_G(:),DP_G(:) !local position, local bathy,etc.
-INTEGER,ALLOCATABLE  :: VTXWGTS_LOC(:)
+INTEGER,ALLOCATABLE   :: VTXWGTS_G(:) !these are defined for the elements
+!
+INTEGER               :: IT ! time step counter 
+
 CONTAINS 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E A D _ G R A P H 
@@ -22,19 +24,20 @@ CONTAINS
 !  READS IN NODAL, ELEMENT CONNECTIVITY   
 !---------------------------------------------------------------------
   SUBROUTINE READGRAPH                                      
+
     IMPLICIT NONE 
+
     INTEGER :: I,J,K,O,ITEMP !counters
-    INTEGER,ALLOCATABLE :: ITVECT1(:)!vector of node numbers
     REAL(8) :: T1,T2
-    INTEGER,ALLOCATABLE :: VTXWGTS_G(:)
+
     OPEN(13, FILE='fort.14',STATUS='OLD')
-!Read title 
+    !Read title 
     READ(13,*) dmy
-!Read number of elements and nodes
+    !Read number of elements and nodes
     READ(13,*) NE,NP
      NE_G = NE 
      NP_G = NP
-!determine the chunk size
+    !determine the chunk size or number of eles on each rank
     IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
         CHUNK = NE/NPROC
     ELSE !if the last PE 
@@ -42,16 +45,19 @@ CONTAINS
         LEFTOVER = NE - (CHUNK*NPROC)         
         CHUNK = CHUNK + LEFTOVER 
     ENDIF
-    !LLOCATE some global arrays
-    ALLOCATE(UQNNUM_G(NP),X_G(NP),Y_G(NP),DP_G(NP)) 
-    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),ITVECT1(3*CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
-!! Read nodal connectivity table
-IF(MYPROC.EQ.0) THEN 
-  PRINT *, "SKIPPING THE NODAL TABLE ..."
-ENDIF
-     DO I = 1,NP 
-        READ(13,*)
-     ENDDO 
+
+    ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
+    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
+
+    !! Read nodal connectivity table
+    IF(MYPROC.EQ.0) THEN 
+      DO I = 1,NP 
+        READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
+      ENDDO 
+    ENDIF
+  CALL MPI_BCAST(X_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+  CALL MPI_BCAST(Y_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+  CALL MPI_BCAST(DP_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
@@ -107,13 +113,14 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "BUILDING EIND, ELMDIST ..."
 ENDIF
    K=1
-   DO I = 1,SIZE(EIND)+1,3 
+   DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
      EPTR(K)=I
      K=K+1 
    ENDDO
-   ALLOCATE(ELMDIST(NPROC+1)) 
+
+   ALLOCATE(ELMDIST(NPROC+1)) !same as vtxdist since dual graph 
    ELMDIST=0 
-   DO I = 0,NPROC
+   DO I = 0,NPROC !the ele numbers on each rank
      ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
    ENDDO
    ELMDIST(NPROC+1)=NE_G+1 
@@ -121,22 +128,25 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "FINISHED BUILDING EIND, ELMDIST ..."
 ENDIF
 
-!***If 1st iter. then read in the vertex weights input file 
-! since vtxdist is the same as elmdist 
-! we know that the node numbers are contiguous
-  ALLOCATE(VTXWGTS_G(NP_G))
-  ALLOCATE(VTWGTS_LOC(ELMDIST(NPROC+1):ELMDIST(NPROC+2)-1))
+! number of dual graph nodes/eles on each rank
+CHUNK_NP = ELMDIST(MYPROC+2)-1 - ELMDIST(MYPROC-1)
+
+! read in vertex weights from input file in working dir
+  ALLOCATE(VTXWGTS_G(NE_G))
+  ALLOCATE(VTWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
 ! IDEA IS THAT FILE I/O IS SLOWER THAN NETWORK
 IF(MYPROC.EQ.0) THEN 
   OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
-  DO I = 1 : NP 
-   READ(13,*) VTXWGTS_G(:)
+  DO I = 1 : NE_G 
+    READ(13,*) VTXWGTS_G(I)
   ENDDO
   CLOSE(13) 
 ENDIF 
-  CALL MPI_BCAST(VTXWGTS_G,NP,MPI_INT,0,MPI_COMM_WORLD,IERR)
+! broadcast the vertex weights to all ranks
+  CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
+!localize the vertex weights on each rank, this is only done for IT==1 
 J=1
-DO I = 1 : NP
+DO I = 1 : NE_G
   IF(I.EQ.ELMDIST(NPROC+1).and.LT.ELMDIST(NPROC+2) THEN 
      VTXWGTS_LOC(J)=VTXWGTS_G(I)
      J=J+1
@@ -144,6 +154,8 @@ DO I = 1 : NP
   ENDIF
 ENDDO  
 
+ALLOCATE(VSIZES_LOC(CHUNK)) 
+VSIZE_LOC = 1 !this never changes 
 
 !#ifdef DEBUG 
 !!have each processor write its local grid so we can check for connectivity
