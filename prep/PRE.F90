@@ -11,11 +11,12 @@ CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
 INTEGER               :: NE, NP,NE_G,NP_G  !number of elements,nodes    
 INTEGER,ALLOCATABLE   :: X_G(:),Y_G(:),DP_G(:)
+INTEGER,ALLOCATABLE   :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
+INTEGER,ALLOCATABLE   :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
+INTEGER,ALLOCATABLE   :: VSIZES_LOC(:),VSIZES_G(:) 
 INTEGER               :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
 INTEGER               :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE   :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
-INTEGER,ALLOCATABLE   :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
-INTEGER,ALLOCATABLE   :: VSIZES_LOC(:)
 !
 INTEGER               :: IT ! time step counter 
 
@@ -115,10 +116,7 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "FINISHED READING IN THE ELE TABLE IN ",T2-T1
 ENDIF
 
-IF(MYPROC.EQ.0) THEN 
-  PRINT *, "BUILDING EIND, ELMDIST ..."
-ENDIF
-   K=1
+  K=1
    DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
      EPTR(K)=I
      K=K+1 
@@ -130,10 +128,6 @@ ENDIF
      ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
    ENDDO
    ELMDIST(NPROC+1)=NE_G+1 
-IF(MYPROC.EQ.0) THEN 
-  PRINT *, "FINISHED BUILDING EIND, ELMDIST ..."
-ENDIF
-
 
 ! read in vertex weights from input file in working dir
   ALLOCATE(VTXWGTS_G(NE_G))
@@ -158,7 +152,7 @@ DO I = 1,NE_G
   ENDIF
 ENDDO  
 ALLOCATE(VSIZES_LOC(CHUNK)) 
-VSIZES_LOC = 1 !this never changes so no need to localize
+VSIZES_LOC = 1 !this never changes so no need to localize YET 
 
 
 !#ifdef DEBUG 

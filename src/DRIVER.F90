@@ -17,7 +17,7 @@ IMPLICIT NONE
 
 CALL MSG_INIT !start up MPI
 CALL READGRAPH 
-DO IT = 1,1 !timestep loop 
+DO IT = 1,2 !timestep loop 
   CALL DECOMPOSE_PAR 
  ! PRINT *, X,Y !manipulate the weights based on a function of x,y and time 
 ENDDO
