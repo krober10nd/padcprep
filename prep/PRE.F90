@@ -1,24 +1,26 @@
 MODULE PRE
 USE MESSENGER
+
 IMPLICIT NONE 
+
 !This module contains most of the global variables, read/write subroutines for
 !the fort.14 and prepares the data for the call to PARMETIS by building all
 !relevant information locally on each MYPROC.  
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-CHARACTER(len=80)   :: dmy !garbage  
+CHARACTER(len=80)           :: dmy !garbage  
 CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
-INTEGER               :: NE, NP,NE_G,NP_G  !number of elements,nodes    
-INTEGER,ALLOCATABLE   :: X_G(:),Y_G(:),DP_G(:)
-INTEGER,ALLOCATABLE   :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
-INTEGER,ALLOCATABLE   :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
-INTEGER,ALLOCATABLE   :: VSIZES_LOC(:),VSIZES_G(:) 
-INTEGER               :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
-INTEGER               :: NOPE,NETA,NBOU,NVEL !boundary information
-INTEGER,ALLOCATABLE   :: IEL(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
-!
-INTEGER               :: IT ! time step counter 
+INTEGER                     :: NE, NP,NE_G,NP_G  !number of elements,nodes    
+INTEGER,ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
+INTEGER,ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
+INTEGER,ALLOCATABLE         :: L2G(:),G2L(:)
+INTEGER,ALLOCATABLE         :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
+INTEGER,ALLOCATABLE         :: VSIZES_LOC(:),VSIZES_G(:) 
+INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
+INTEGER                     :: NOPE,NETA,NBOU,NVEL !boundary information
+INTEGER,ALLOCATABLE         :: IEL(:),IEL_LOC(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
+INTEGER                     :: IT ! time step counter 
 
 CONTAINS 
 !---------------------------------------------------------------------
@@ -26,45 +28,50 @@ CONTAINS
 !---------------------------------------------------------------------
 !  READS IN NODAL, ELEMENT CONNECTIVITY   
 !---------------------------------------------------------------------
-  SUBROUTINE READGRAPH                                      
+SUBROUTINE READGRAPH                                      
 
-    IMPLICIT NONE 
+IMPLICIT NONE 
 
-    INTEGER :: I,J,K,O,ITEMP !counters
-    REAL(8) :: T1,T2
+INTEGER :: I,J,K,O,ITEMP !counters
+REAL(8) :: T1,T2
 
-    OPEN(13, FILE='fort.14',STATUS='OLD')
-    !Read title 
-    READ(13,*) dmy
-    !Read number of elements and nodes
-    READ(13,*) NE,NP
-     NE_G = NE 
-     NP_G = NP
-    !determine the chunk size or number of eles on each rank
-    IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
-        CHUNK = NE/NPROC
-    ELSE !if the last PE 
-        CHUNK = NE/NPROC
-        LEFTOVER = NE - (CHUNK*NPROC)         
-        CHUNK = CHUNK + LEFTOVER 
-    ENDIF
-
-    ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
-    ALLOCATE(IEL(CHUNK),NNEL(3,CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
-
-    !! Read nodal connectivity table
-    IF(MYPROC.EQ.0) THEN 
-      DO I = 1,NP 
-        READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
-      ENDDO
-    ELSE 
-      DO I = 1,NP 
-        READ(13,*)
-      ENDDO 
-    ENDIF
-  CALL MPI_BCAST(X_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
-  CALL MPI_BCAST(Y_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
-  CALL MPI_BCAST(DP_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+OPEN(13, FILE='fort.14',STATUS='OLD')
+!Read title 
+READ(13,*) dmy
+!Read number of elements and nodes
+READ(13,*) NE,NP
+NE_G = NE 
+NP_G = NP
+!naive decomposition is contiguous 
+ALLOCATE(L2G(NE_G),G2L(NE_G)) 
+DO I = 1,NE_G
+  G2L(I)=I
+  L2G(I)=I
+ENDDO
+!determine the chunk size or number of eles on each rank
+IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
+    CHUNK = NE/NPROC
+ELSE !if the last PE 
+    CHUNK = NE/NPROC
+    LEFTOVER = NE - (CHUNK*NPROC)         
+    CHUNK = CHUNK + LEFTOVER 
+ENDIF
+ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
+ALLOCATE(IEL(CHUNK),IEL_LOC(NE_G),NNEL(3,CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
+IEL_LOC=0
+!! Read nodal connectivity table
+IF(MYPROC.EQ.0) THEN 
+  DO I = 1,NP 
+    READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
+  ENDDO
+ELSE 
+  DO I = 1,NP 
+    READ(13,*)
+  ENDDO 
+ENDIF
+CALL MPI_BCAST(X_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(Y_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(DP_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
@@ -72,30 +79,30 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "READING IN THE ELE TABLE ..."
 ENDIF
 CALL CPU_TIME(T1)
-   NNEL=0  
-   EIND=0
-   EPTR=0 
-   IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
-    K=1 
-    O=1 
-    DO I = 1,NE
-      IF(I.GE.(MYPROC*CHUNK+1).AND.I.LE.((MYPROC*CHUNK)+CHUNK)) THEN 
-        READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
-        EIND(O)=NNEL(1,K)
-        O=O+1 
-        EIND(O)=NNEL(2,K)
-        O=O+1  
-        EIND(O)=NNEL(3,K)
-        O=O+1 
-        K = K + 1 
-      ELSE 
-        READ(13,*)
-      ENDIF
-    ENDDO
+NNEL=0  
+EIND=0
+EPTR=0 
+IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
+  K=1 
+  O=1 
+  DO I = 1,NE
+    IF(I.GE.(MYPROC*CHUNK+1).AND.I.LE.((MYPROC*CHUNK)+CHUNK)) THEN 
+      READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
+      EIND(O)=NNEL(1,K)
+      O=O+1 
+      EIND(O)=NNEL(2,K)
+      O=O+1  
+      EIND(O)=NNEL(3,K)
+      O=O+1 
+      K = K + 1 
+    ELSE 
+      READ(13,*)
+    ENDIF
+  ENDDO
   ELSE
-   K=1
-   O=1
-    DO I = 1,NE 
+  K=1
+  O=1
+   DO I = 1,NE 
      IF(I.GE.MYPROC*(CHUNK-LEFTOVER)+1) THEN 
        READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
        EIND(O)=NNEL(1,K) 
@@ -108,31 +115,30 @@ CALL CPU_TIME(T1)
      ELSE 
        READ(13,*)
      ENDIF
-    ENDDO
-  ENDIF
-  CLOSE(13)
+   ENDDO
+ENDIF
+CLOSE(13)
 CALL CPU_TIME(T2)
 IF(MYPROC.EQ.0) THEN 
   PRINT *, "FINISHED READING IN THE ELE TABLE IN ",T2-T1
 ENDIF
 
-  K=1
-   DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
-     EPTR(K)=I
-     K=K+1 
-   ENDDO
+K=1
+DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
+  EPTR(K)=I
+  K=K+1 
+ENDDO
 
-   ALLOCATE(ELMDIST(NPROC+1)) !same as vtxdist since dual graph 
-   ELMDIST=0 
-   DO I = 0,NPROC !the ele numbers on each rank
-     ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
-   ENDDO
-   ELMDIST(NPROC+1)=NE_G+1 
+ALLOCATE(ELMDIST(NPROC+1)) !same as vtxdist since dual graph 
+ELMDIST=0 
+DO I = 0,NPROC !the ele numbers on each rank
+  ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
+ENDDO
+ELMDIST(NPROC+1)=NE_G+1 
 
 ! read in vertex weights from input file in working dir
-  ALLOCATE(VTXWGTS_G(NE_G))
-  ALLOCATE(VTXWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
-! IDEA IS THAT FILE I/O IS SLOWER THAN NETWORK
+ALLOCATE(VTXWGTS_G(NE_G))
+ALLOCATE(VTXWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
 IF(MYPROC.EQ.0) THEN 
   OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
   DO I = 1,NE_G 
@@ -141,14 +147,13 @@ IF(MYPROC.EQ.0) THEN
   CLOSE(13) 
 ENDIF 
 ! broadcast the global vertex weights to all ranks
-  CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
 !localize the vertex weights on each rank for the naive decomp, this is only done for IT==1 
 J=1
 DO I = 1,NE_G
   IF(I.GE.ELMDIST(MYPROC+1).and.I.LT.ELMDIST(MYPROC+2)) THEN 
      VTXWGTS_LOC(J)=VTXWGTS_G(I)
      J=J+1
-  ELSE  
   ENDIF
 ENDDO  
 ALLOCATE(VSIZES_LOC(CHUNK)) 
@@ -189,7 +194,8 @@ VSIZES_LOC = 1 !this never changes so no need to localize YET
 !65     FORMAT(1I5,"=Total number of land boundary nodes.")
 !     CLOSE(MYPROC+105)
 !#endif DEBUG
-  END SUBROUTINE READGRAPH
+RETURN 
+END SUBROUTINE READGRAPH
 !---------------------------------------------------------------------------
 !                       S U B R O U T I N E    S O R T 
 !---------------------------------------------------------------------------
