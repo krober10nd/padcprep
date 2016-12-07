@@ -14,12 +14,13 @@ CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain gr
 INTEGER                     :: NE, NP,NE_G,NP_G  !number of elements,nodes    
 INTEGER,ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
 INTEGER,ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
+INTEGER,ALLOCATABLE         :: DMYCOUNT(:)
 INTEGER,ALLOCATABLE         :: L2G(:),G2L(:)
 INTEGER,ALLOCATABLE         :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
 INTEGER,ALLOCATABLE         :: VSIZES_LOC(:),VSIZES_G(:) 
 INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
 INTEGER                     :: NOPE,NETA,NBOU,NVEL !boundary information
-INTEGER,ALLOCATABLE         :: IEL(:),IEL_LOC(:),NNEL(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
+INTEGER,ALLOCATABLE         :: IEL_LOC(:),NNEL_LOC(:,:),NNEL_G(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
 INTEGER                     :: IT ! time step counter 
 
 CONTAINS 
@@ -43,6 +44,7 @@ READ(13,*) NE,NP
 NE_G = NE 
 NP_G = NP
 !naive decomposition is contiguous 
+!build local to global and global to local maps
 ALLOCATE(L2G(NE_G),G2L(NE_G)) 
 DO I = 1,NE_G
   G2L(I)=I
@@ -57,8 +59,7 @@ ELSE !if the last PE
     CHUNK = CHUNK + LEFTOVER 
 ENDIF
 ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
-ALLOCATE(IEL(CHUNK),IEL_LOC(NE_G),NNEL(3,CHUNK),EIND(3*CHUNK),EPTR(CHUNK+1))
-IEL_LOC=0
+ALLOCATE(IEL_LOC(CHUNK),NNEL_LOC(3,CHUNK),NNEL_G(3,NE_G),EIND(3*CHUNK),EPTR(CHUNK+1))
 !! Read nodal connectivity table
 IF(MYPROC.EQ.0) THEN 
   DO I = 1,NP 
@@ -79,7 +80,8 @@ IF(MYPROC.EQ.0) THEN
   PRINT *, "READING IN THE ELE TABLE ..."
 ENDIF
 CALL CPU_TIME(T1)
-NNEL=0  
+NNEL_LOC=0
+NNEL_G=0  
 EIND=0
 EPTR=0 
 IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
@@ -87,12 +89,12 @@ IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
   O=1 
   DO I = 1,NE
     IF(I.GE.(MYPROC*CHUNK+1).AND.I.LE.((MYPROC*CHUNK)+CHUNK)) THEN 
-      READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
-      EIND(O)=NNEL(1,K)
+      READ(13,*) IEL_LOC(K),ITEMP,NNEL_LOC(1,K),NNEL_LOC(2,K),NNEL_LOC(3,K)
+      EIND(O)=NNEL_LOC(1,K)
       O=O+1 
-      EIND(O)=NNEL(2,K)
+      EIND(O)=NNEL_LOC(2,K)
       O=O+1  
-      EIND(O)=NNEL(3,K)
+      EIND(O)=NNEL_LOC(3,K)
       O=O+1 
       K = K + 1 
     ELSE 
@@ -104,12 +106,12 @@ IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
   O=1
    DO I = 1,NE 
      IF(I.GE.MYPROC*(CHUNK-LEFTOVER)+1) THEN 
-       READ(13,*) IEL(K),ITEMP,NNEL(1,K),NNEL(2,K),NNEL(3,K)
-       EIND(O)=NNEL(1,K) 
+       READ(13,*) IEL_LOC(K),ITEMP,NNEL_LOC(1,K),NNEL_LOC(2,K),NNEL_LOC(3,K)
+       EIND(O)=NNEL_LOC(1,K) 
        O=O+1 
-       EIND(O)=NNEL(2,K) 
+       EIND(O)=NNEL_LOC(2,K) 
        O=O+1 
-       EIND(O)=NNEL(3,K) 
+       EIND(O)=NNEL_LOC(3,K) 
        O=O+1 
        K = K + 1
      ELSE 
@@ -118,6 +120,10 @@ IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
    ENDDO
 ENDIF
 CLOSE(13)
+!DO I = 1,3
+!CALL MPI_GATHER(NNEL_LOC(I,:),CHUNK,MPI_INT,NNEL_G(I,:),CHUNK,MPI_INT,0,MPI_COMM_WORLD,IERR)
+!CALL MPI_BCAST(NNEL_G(I,:),NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
+!ENDDO
 CALL CPU_TIME(T2)
 IF(MYPROC.EQ.0) THEN 
   PRINT *, "FINISHED READING IN THE ELE TABLE IN ",T2-T1
@@ -157,8 +163,26 @@ DO I = 1,NE_G
   ENDIF
 ENDDO  
 ALLOCATE(VSIZES_LOC(CHUNK)) 
-VSIZES_LOC = 1 !this never changes so no need to localize YET 
+VSIZES_LOC = 1 !this doesn't change (yet) so no need to localize YET 
 
+! localize the nodal attributes (X_LOC,Y_LOC,DP_LOC)
+! determine the number of unique nodes on each rank 
+ALLOCATE(DMYCOUNT(NP_G))
+DMYCOUNT=0 
+DO I = 1,3*CHUNK 
+  DMYCOUNT(EIND(I))=1 
+ENDDO
+CHUNK_NP=SUM(DMYCOUNT) !number of nodes on each rank 
+ALLOCATE(X_LOC(CHUNK_NP),Y_LOC(CHUNK_NP),DP_LOC(CHUNK_NP))
+K=1
+DO I = 1,NP_G 
+  IF(DMYCOUNT(I).NE.0) THEN 
+    X_LOC(K)=X_G(I) 
+    Y_LOC(K)=Y_G(I) 
+   DP_LOC(K)=DP_G(I) 
+   K=K+1 
+  ENDIF
+ENDDO
 
 !#ifdef DEBUG 
 !!have each processor write its local grid so we can check for connectivity
