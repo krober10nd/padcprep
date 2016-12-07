@@ -1,7 +1,10 @@
 FC = mpif90 
-libdir=-L../prep/parmetis-4.0.3/build/Linux-x86_64/libparmetis
-FFLAGS = -O0 -c -traceback -g -check bounds 
-LFLAGS =  -O0 $(libdir) -lparmetis
+
+libdir2=-L/home2/krober10/DynamicLoadBalance/prep/parmetis-4.0.3/build/Linux-x86_64/libmetis
+libdir1=-L/home2/krober10/parmetis/lib/
+
+FFLAGS = -O0  -c -traceback -g -check bounds 
+LFLAGS =  -O0  $(libdir1) -lparmetis $(libdir2) -lmetis
 LINK = $(FC)
 TARGET =  ../DynExchange.exe 
 OBJS =  ../src/MESSENGER.o \

@@ -12,12 +12,12 @@ CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
 CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
 CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
 INTEGER                     :: NE, NP,NE_G,NP_G  !number of elements,nodes    
-INTEGER,ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
-INTEGER,ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
+REAL(8),ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
+REAL(8),ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
 INTEGER,ALLOCATABLE         :: DMYCOUNT(:)
 INTEGER,ALLOCATABLE         :: L2G(:),G2L(:)
-INTEGER,ALLOCATABLE         :: VTXWGTS_LOC(:),VTXWGTS_G(:) !these are defined for the elements
-INTEGER,ALLOCATABLE         :: VSIZES_LOC(:),VSIZES_G(:) 
+INTEGER,ALLOCATABLE         :: VTXWGTS_LOC(:),VTXWGTS_LOC2(:),VTXWGTS_G(:) !these are defined for the elements
+INTEGER,ALLOCATABLE         :: VSIZES_LOC(:),VSIZES_LOC2(:),VSIZES_G(:) 
 INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
 INTEGER                     :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE         :: IEL_LOC(:),NNEL_LOC(:,:),NNEL_G(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
@@ -44,12 +44,6 @@ READ(13,*) NE,NP
 NE_G = NE 
 NP_G = NP
 !naive decomposition is contiguous 
-!build local to global and global to local maps
-ALLOCATE(L2G(NE_G),G2L(NE_G)) 
-DO I = 1,NE_G
-  G2L(I)=I
-  L2G(I)=I
-ENDDO
 !determine the chunk size or number of eles on each rank
 IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
     CHUNK = NE/NPROC
@@ -62,7 +56,7 @@ ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G))
 ALLOCATE(IEL_LOC(CHUNK),NNEL_LOC(3,CHUNK),NNEL_G(3,NE_G),EIND(3*CHUNK),EPTR(CHUNK+1))
 !! Read nodal connectivity table
 IF(MYPROC.EQ.0) THEN 
-  DO I = 1,NP 
+  DO I = 1,NP_G 
     READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
   ENDDO
 ELSE 
@@ -70,9 +64,9 @@ ELSE
     READ(13,*)
   ENDDO 
 ENDIF
-CALL MPI_BCAST(X_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
-CALL MPI_BCAST(Y_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
-CALL MPI_BCAST(DP_G,NP_G,MPI_REAL,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(X_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(Y_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+CALL MPI_BCAST(DP_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
@@ -120,10 +114,6 @@ IF(MYPROC.NE.(NPROC-1)) THEN  !if not the last PE
    ENDDO
 ENDIF
 CLOSE(13)
-!DO I = 1,3
-!CALL MPI_GATHER(NNEL_LOC(I,:),CHUNK,MPI_INT,NNEL_G(I,:),CHUNK,MPI_INT,0,MPI_COMM_WORLD,IERR)
-!CALL MPI_BCAST(NNEL_G(I,:),NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
-!ENDDO
 CALL CPU_TIME(T2)
 IF(MYPROC.EQ.0) THEN 
   PRINT *, "FINISHED READING IN THE ELE TABLE IN ",T2-T1
@@ -144,17 +134,17 @@ ELMDIST(NPROC+1)=NE_G+1
 
 ! read in vertex weights from input file in working dir
 ALLOCATE(VTXWGTS_G(NE_G))
-ALLOCATE(VTXWGTS_LOC(CHUNK)) ! initially vtwgts is size chun
-IF(MYPROC.EQ.0) THEN 
-  OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
-  DO I = 1,NE_G 
-    READ(13,*) VTXWGTS_G(I)
-  ENDDO
-  CLOSE(13) 
-ENDIF 
+ALLOCATE(VTXWGTS_LOC(CHUNK),VSIZES_LOC(CHUNK)) ! initially vtwgts is size chun
+!IF(MYPROC.EQ.0) THEN 
+!  OPEN(13,file='VW.txt',STATUS='old') !open file containing vertex weights here 
+!  DO I = 1,NE_G 
+!    READ(13,*) VTXWGTS_G(I)
+!  ENDDO
+!  CLOSE(13) 
+!ENDIF 
 ! broadcast the global vertex weights to all ranks
-CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
-!localize the vertex weights on each rank for the naive decomp, this is only done for IT==1 
+!CALL MPI_BCAST(VTXWGTS_G,NE_G,MPI_INT,0,MPI_COMM_WORLD,IERR)
+VTXWGTS_G=1
 J=1
 DO I = 1,NE_G
   IF(I.GE.ELMDIST(MYPROC+1).and.I.LT.ELMDIST(MYPROC+2)) THEN 
@@ -162,9 +152,7 @@ DO I = 1,NE_G
      J=J+1
   ENDIF
 ENDDO  
-ALLOCATE(VSIZES_LOC(CHUNK)) 
 VSIZES_LOC = 1 !this doesn't change (yet) so no need to localize YET 
-
 ! localize the nodal attributes (X_LOC,Y_LOC,DP_LOC)
 ! determine the number of unique nodes on each rank 
 ALLOCATE(DMYCOUNT(NP_G))
@@ -220,50 +208,4 @@ ENDDO
 !#endif DEBUG
 RETURN 
 END SUBROUTINE READGRAPH
-!---------------------------------------------------------------------------
-!                       S U B R O U T I N E    S O R T 
-!---------------------------------------------------------------------------
-!  Sorts array RA of length N into ascending order using Heapsort algorithm.
-!  N is input; RA is replaced on its output by its sorted rearrangement.
-!  Ref: Numerical Recipes
-!---------------------------------------------------------------------------
-!
-  SUBROUTINE SORT(N,RA)
-      IMPLICIT NONE
-      INTEGER N, L, IR, RRA, I, J
-      INTEGER RA(N)
-
-      L = N/2 + 1
-      IR = N
-10    CONTINUE
-      IF (L.GT.1)THEN
-        L=L-1
-        RRA = RA(L)
-      ELSE
-        RRA=RA(IR)
-        RA(IR)=RA(1)
-        IR=IR-1
-        IF (IR.EQ.1) THEN
-          RA(1)=RRA
-          RETURN
-        ENDIF
-      ENDIF
-      I=L
-      J=L+L
-20    IF (J.LE.IR) THEN
-        IF (J.LT.IR) THEN
-          IF(RA(J).LT.RA(J+1)) J=J+1
-        ENDIF
-        IF (RRA.LT.RA(J)) THEN
-          RA(I)=RA(J)
-          I=J
-          J=J+J
-        ELSE
-          J=IR+1
-        ENDIF
-        GO TO 20
-      ENDIF
-      RA(I)=RRA
-      GO TO 10
-   END SUBROUTINE SORT 
 END MODULE PRE
