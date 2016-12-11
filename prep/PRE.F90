@@ -15,7 +15,6 @@ INTEGER                     :: NE, NP,NE_G,NP_G  !number of elements,nodes
 REAL(8),ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
 REAL(8),ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
 INTEGER,ALLOCATABLE         :: DMYCOUNT(:)
-INTEGER,ALLOCATABLE         :: L2G(:),G2L(:)
 INTEGER,ALLOCATABLE         :: VTXWGTS_LOC(:),VTXWGTS_LOC2(:),VTXWGTS_G(:) !these are defined for the elements
 INTEGER,ALLOCATABLE         :: VSIZES_LOC(:),VSIZES_LOC2(:),VSIZES_G(:) 
 INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. of local nodes
@@ -33,65 +32,69 @@ SUBROUTINE RM_DRY
 
 IMPLICIT NONE 
 
-INTEGER :: I,J,K,O,ITEMP !counters
-INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM
+INTEGER :: I,J,K,O,ITEMP,chunk_temp !counters
+INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM(:,:)
 REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP
-REAL(8) :: AVGDEPTH(NE_G) 
+REAL(8) :: AVGDEPTH_LOC(CHUNK) 
 
-L2G=0
 MinDepth=0.10D0
-AVGDEPTH=0D0 
+AvgDepth_LOC=0D0 
 O=1
 K=1
 DO I = 1,CHUNK 
-  NM1_DP=DP_LOC(EIND(O))
+  NM1_DP=DP_G(EIND(O))
   O=O+1 
-  NM2_DP=DP_LOC(EIND(O)) 
+  NM2_DP=DP_G(EIND(O)) 
   O=O+1
-  NM3_DP=DP_LOC(EIND(O))
-  O=O+1 
-  AvgDepth(K)=(1/3)*(NM1_DP+NM2_DP+NM3_DP)
+  NM3_DP=DP_G(EIND(O))
+  O=O+1
+  AvgDepth_LOC(K)=(NM1_DP+NM2_DP+NM3_DP)/3D0
   K=K+1
 ENDDO
-
 K=0
-DO I =1,CHUNK
-  IF(AVGDEPTH(I).LT.MinDEPTH) THEN 
+DO I =1,CHUNK !if it's ge than mindepth, keep it
+  IF(AVGDEPTH_LOC(I).GE.MinDEPTH) THEN 
     K=k+1
   ENDIF
 ENDDO
-CHUNK=K !RESIZED
-ALLOCATE(NNEL_LOC_TRIM(3,CHUNK)) 
-ALLOCATE(L2G(CHUNK))
+CHUNK_TEMP=K !RESIZED
+ALLOCATE(NNEL_LOC_TRIM(3,CHUNK_TEMP)) 
+NNEL_LOC_TRIM= -1
+CALL MPI_ALLREDUCE(CHUNK_TEMP,NE_G,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD,IERR)
+IF(MYPROC.EQ.0) THEN 
+  PRINT *, "The resized no. of eles in domain is ", NE_G
+ENDIF
 
 K=1
-DO I = 1,CHUNK
-  IF(AVGDEPTH(I).LT.MinDepth) THEN 
-    NNEL_LOC_TRIM(1,K)=NNEL_LOC(1,I)
-    NNEL_LOC_TRIM(2,K)=NNEL_LOC(2,I)
-    NNEL_LOC_TRIM(3,K)=NNEL_LOC(3,I)
-    L2G(I)=K
+O=1
+J=1
+DO I = (MYPROC*CHUNK)+1,(MYPROC*CHUNK)+CHUNK !this is global ele number 
+  IF(AVGDEPTH_LOC(O).GE.MinDepth) THEN ! keep it
+    NNEL_LOC_TRIM(1,K)=NNEL_LOC(1,O)
+    NNEL_LOC_TRIM(2,K)=NNEL_LOC(2,O)
+    NNEL_LOC_TRIM(3,K)=NNEL_LOC(3,O)
     K=K+1
   ENDIF 
+  O=O+1
 ENDDO
-DEALLOCATE(NNEL_LOC) 
-DEALLOCATE(EIND) 
+
+CHUNK = CHUNK_TEMP
+DEALLOCATE(EIND,NNEL_LOC) 
 ALLOCATE(NNEL_LOC(3,CHUNK),EIND(3*CHUNK)) 
-NNEL_LOC=NNEL_LOC_TRIM
+EIND=-1 
 !rebuild eind and return back 
 O=1 
 DO I = 1,CHUNK
-  EIND(O)=NNEL_LOC(1,I)
+  EIND(O)=NNEL_LOC_TRIM(1,I)
   O=O+1 
-  EIND(O)=NNEL_LOC(2,I)
+  EIND(O)=NNEL_LOC_TRIM(2,I)
   O=O+1  
-  EIND(O)=NNEL_LOC(3,I)
+  EIND(O)=NNEL_LOC_TRIM(3,I)
   O=O+1 
 ENDDO
-
+NNEL_LOC=NNEL_LOC_TRIM
 RETURN 
 END SUBROUTINE RM_DRY
-
 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E A D _ G R A P H 
@@ -104,6 +107,7 @@ IMPLICIT NONE
 
 INTEGER :: I,J,K,O,ITEMP !counters
 REAL(8) :: T1,T2
+
 OPEN(13, FILE='fort.14',STATUS='OLD')
 !Read title 
 READ(13,*) dmy
@@ -111,6 +115,7 @@ READ(13,*) dmy
 READ(13,*) NE,NP
 NE_G = NE 
 NP_G = NP
+
 !naive decomposition is contiguous 
 !determine the chunk size or number of eles on each rank
 IF(MYPROC.NE.(NPROC-1)) THEN !if not the last PE 
@@ -188,6 +193,9 @@ IF(MYPROC.EQ.0) THEN
 ENDIF
 
 #ifdef TRIM_DRY
+IF(MYPROC.EQ.0) THEN
+  PRINT *, "Trimming dry elements..."
+ENDIF
 CALL RM_DRY 
 #endif 
 
@@ -199,12 +207,17 @@ ENDDO
 
 ALLOCATE(ELMDIST(NPROC+1)) !same as vtxdist since dual graph 
 ELMDIST=0 
+#ifndef TRIM_DRY 
 DO I = 0,NPROC !the ele numbers on each rank
   ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
 ENDDO
+#else           
+DO I = 0,NPROC ! leftover isn't valid anymore. the ele numbers on each rank
+  ELMDIST(I+1)=(I*CHUNK)+1
+ENDDO
+#endif
 ELMDIST(NPROC+1)=NE_G+1 
 
-! read in vertex weights from input file in working dir
 ALLOCATE(VTXWGTS_G(NE_G))
 ALLOCATE(VTXWGTS_LOC(CHUNK),VSIZES_LOC(CHUNK)) ! initially vtwgts is size chun
 !IF(MYPROC.EQ.0) THEN 

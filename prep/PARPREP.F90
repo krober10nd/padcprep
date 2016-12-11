@@ -110,6 +110,15 @@ DO I = 1,CHUNK
 ENDDO
 ! use mpi_max to reduce to a global vector of partition labels for FEM nodes.  
 CALL MPI_ALLREDUCE(MPI_IN_PLACE,PARTN_G,NP_G,MPI_INT,MPI_MAX,MPI_COMM_WORLD,IERR)
+! nodes that were trimmed will not have a rank label, therefore lump them on
+! rank NPROC+1
+#ifdef TRIM_DRY 
+ DO I = 1,NP_G
+    IF(PARTN_G(I).EQ.0) THEN 
+      PARTN_G(I)=NPROC+1
+    ENDIF
+ ENDDO
+#endif
 IF(EDGECUT.GT.0) THEN 
   IF(MYPROC.EQ.0) THEN 
     PRINT *, "writing nodal graph partition to file: partmesh.txt"
