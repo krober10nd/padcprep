@@ -25,6 +25,75 @@ INTEGER                     :: IT ! time step counter
 
 CONTAINS 
 !---------------------------------------------------------------------
+!      S U B R O U T I N E   R E M O V E   D R Y 
+!---------------------------------------------------------------------
+!  REMOVES NEVER DRY ELEMENTS AND NODES 
+!---------------------------------------------------------------------
+SUBROUTINE RM_DRY                  
+
+IMPLICIT NONE 
+
+INTEGER :: I,J,K,O,ITEMP !counters
+INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM
+REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP
+REAL(8) :: AVGDEPTH(NE_G) 
+
+L2G=0
+MinDepth=0.10D0
+AVGDEPTH=0D0 
+O=1
+K=1
+DO I = 1,CHUNK 
+  NM1_DP=DP_LOC(EIND(O))
+  O=O+1 
+  NM2_DP=DP_LOC(EIND(O)) 
+  O=O+1
+  NM3_DP=DP_LOC(EIND(O))
+  O=O+1 
+  AvgDepth(K)=(1/3)*(NM1_DP+NM2_DP+NM3_DP)
+  K=K+1
+ENDDO
+
+K=0
+DO I =1,CHUNK
+  IF(AVGDEPTH(I).LT.MinDEPTH) THEN 
+    K=k+1
+  ENDIF
+ENDDO
+CHUNK=K !RESIZED
+ALLOCATE(NNEL_LOC_TRIM(3,CHUNK)) 
+ALLOCATE(L2G(CHUNK))
+
+K=1
+DO I = 1,CHUNK
+  IF(AVGDEPTH(I).LT.MinDepth) THEN 
+    NNEL_LOC_TRIM(1,K)=NNEL_LOC(1,I)
+    NNEL_LOC_TRIM(2,K)=NNEL_LOC(2,I)
+    NNEL_LOC_TRIM(3,K)=NNEL_LOC(3,I)
+    L2G(I)=K
+    K=K+1
+  ENDIF 
+ENDDO
+DEALLOCATE(NNEL_LOC) 
+DEALLOCATE(EIND) 
+ALLOCATE(NNEL_LOC(3,CHUNK),EIND(3*CHUNK)) 
+NNEL_LOC=NNEL_LOC_TRIM
+!rebuild eind and return back 
+O=1 
+DO I = 1,CHUNK
+  EIND(O)=NNEL_LOC(1,I)
+  O=O+1 
+  EIND(O)=NNEL_LOC(2,I)
+  O=O+1  
+  EIND(O)=NNEL_LOC(3,I)
+  O=O+1 
+ENDDO
+
+RETURN 
+END SUBROUTINE RM_DRY
+
+
+!---------------------------------------------------------------------
 !      S U B R O U T I N E   R E A D _ G R A P H 
 !---------------------------------------------------------------------
 !  READS IN NODAL, ELEMENT CONNECTIVITY   
@@ -35,7 +104,6 @@ IMPLICIT NONE
 
 INTEGER :: I,J,K,O,ITEMP !counters
 REAL(8) :: T1,T2
-
 OPEN(13, FILE='fort.14',STATUS='OLD')
 !Read title 
 READ(13,*) dmy
@@ -118,6 +186,10 @@ CALL CPU_TIME(T2)
 IF(MYPROC.EQ.0) THEN 
   PRINT *, "FINISHED READING IN THE ELE TABLE IN ",T2-T1
 ENDIF
+
+#ifdef TRIM_DRY
+CALL RM_DRY 
+#endif 
 
 K=1
 DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
