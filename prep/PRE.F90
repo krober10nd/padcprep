@@ -21,78 +21,113 @@ INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. 
 INTEGER                     :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE         :: IEL_LOC(:),NNEL_LOC(:,:),NNEL_G(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
 INTEGER                     :: IT ! time step counter 
+LOGICAL                     :: isfirst=.true.
 
 CONTAINS 
+
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E M O V E   D R Y 
 !---------------------------------------------------------------------
-!  REMOVES NEVER DRY ELEMENTS AND NODES 
+!  REMOVES DRY ELEMENTS ABOVE MIN DEPTH, THEN RE-WRITES
+!  THE GRAPH TO A FILE CALLED 'FORT.14.DRY'
 !---------------------------------------------------------------------
 SUBROUTINE RM_DRY                  
 
 IMPLICIT NONE 
 
-INTEGER :: I,J,K,O,ITEMP,chunk_temp !counters
-INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM(:,:)
+INTEGER :: I,J,JJ,K,O !counters
+INTEGER :: printno,pe
+INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM(:,:),EIND_TRIM(:)
 REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP
-REAL(8) :: AVGDEPTH_LOC(CHUNK) 
+REAL(8) :: AVGDEPTH_LOC(chunk) 
+LOGICAL :: finish=.false.
 
-MinDepth=0.10D0
+if(myproc.eq.0) then 
+  PRINT *, "TRIMMING GRAPH..."
+endif
+
+MinDepth=0.50D0
 AvgDepth_LOC=0D0 
+
 O=1
-K=1
-DO I = 1,CHUNK 
+DO I = 1,CHUNK
   NM1_DP=DP_G(EIND(O))
   O=O+1 
   NM2_DP=DP_G(EIND(O)) 
   O=O+1
   NM3_DP=DP_G(EIND(O))
   O=O+1
-  AvgDepth_LOC(K)=(NM1_DP+NM2_DP+NM3_DP)/3D0
-  K=K+1
+  AvgDepth_LOC(I)=(NM1_DP+NM2_DP+NM3_DP)/3D0
 ENDDO
-K=0
-DO I =1,CHUNK !if it's ge than mindepth, keep it
+
+printno=0
+DO I =1,chunk !if it's ge than mindepth, keep it
   IF(AVGDEPTH_LOC(I).GE.MinDEPTH) THEN 
-    K=k+1
+    printno=printno+1
   ENDIF
 ENDDO
-CHUNK_TEMP=K !RESIZED
-ALLOCATE(NNEL_LOC_TRIM(3,CHUNK_TEMP)) 
-NNEL_LOC_TRIM= -1
-CALL MPI_ALLREDUCE(CHUNK_TEMP,NE_G,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD,IERR)
-IF(MYPROC.EQ.0) THEN 
-  PRINT *, "The resized no. of eles in domain is ", NE_G
-ENDIF
 
-K=1
-O=1
-J=1
-DO I = (MYPROC*CHUNK)+1,(MYPROC*CHUNK)+CHUNK !this is global ele number 
-  IF(AVGDEPTH_LOC(O).GE.MinDepth) THEN ! keep it
-    NNEL_LOC_TRIM(1,K)=NNEL_LOC(1,O)
-    NNEL_LOC_TRIM(2,K)=NNEL_LOC(2,O)
-    NNEL_LOC_TRIM(3,K)=NNEL_LOC(3,O)
-    K=K+1
-  ENDIF 
-  O=O+1
-ENDDO
+IF(printno.ne.0) then 
+  ALLOCATE(NNEL_LOC_TRIM(3,PRINTNO))
+endif
 
-CHUNK = CHUNK_TEMP
-DEALLOCATE(EIND,NNEL_LOC) 
-ALLOCATE(NNEL_LOC(3,CHUNK),EIND(3*CHUNK)) 
-EIND=-1 
-!rebuild eind and return back 
-O=1 
-DO I = 1,CHUNK
-  EIND(O)=NNEL_LOC_TRIM(1,I)
-  O=O+1 
-  EIND(O)=NNEL_LOC_TRIM(2,I)
-  O=O+1  
-  EIND(O)=NNEL_LOC_TRIM(3,I)
-  O=O+1 
+K=1 
+jj=1
+DO I = 1,chunk
+  IF(AVGDEPTH_LOC(I).GE.MinDepth) THEN
+    NNEL_LOC_TRIM(1,jj)=NNEL_LOC(1,K)
+    NNEL_LOC_TRIM(2,jj)=NNEL_LOC(2,K)
+    NNEL_LOC_TRIM(3,jj)=NNEL_LOC(3,K)
+    K = K + 1 
+    jj = jj + 1
+  ENDIF
 ENDDO
-NNEL_LOC=NNEL_LOC_TRIM
+CALL mpi_allreduce(k-1,ne_g,1,mpi_int,mpi_sum,mpi_comm_world,ierr)
+if(myproc.eq.0) then 
+  print *, "resized the problem to ",ne_g," elements."
+endif
+
+if(myproc.eq.0) then 
+  open(unit=13,file='fort.14.trim') 
+  write(13,5)"trimmed graph"  
+  write(13,6) ne_g,np_g 
+  do i = 1,np_g 
+    write(13,55) i,x_g(i),y_g(i),dp_g(i)
+  enddo
+close(13)
+endif 
+! wait until rank 0 finishes writing nodal connectivity
+call mpi_barrier(mpi_comm_world,ierr) 
+
+pe = -1 
+jj=1
+do while(finish.eqv..false.) 
+  pe = pe + 1 
+  if(myproc.eq.pe) then 
+     print *, MYPROC ," has opened the file. Printing ", printno 
+     open(unit=13,file='fort.14.trim',access='append')
+     do i = 1,printno
+       write(13,77) jj,3,nnel_loc_trim(1,i),nnel_loc_trim(2,i),nnel_loc_trim(3,i) !write nnel 
+       jj=jj+1 
+     enddo
+     close(13) 
+   endif
+
+  call mpi_bcast(jj,1,mpi_int,pe,mpi_comm_world,ierr)
+  call mpi_barrier(mpi_comm_world,ierr) 
+  print *, jj
+  if(pe.eq.nproc-1) then 
+    finish=.true. 
+  endif 
+enddo 
+
+5  format(a25)
+6  format(2I15)
+55 format(I10,3f25.16)
+77 format(5I9) 
+! this will be rebuilt in read_graph 
+deallocate(IEL_LOC,NNEL_LOC,NNEL_G,EIND,EPTR)
+
 RETURN 
 END SUBROUTINE RM_DRY
 
@@ -107,8 +142,17 @@ IMPLICIT NONE
 
 INTEGER :: I,J,K,O,ITEMP !counters
 REAL(8) :: T1,T2
+CHARACTER(LEN=256) :: FILENAME
+ 
+filename='fort.14'
+#ifdef TRIM_DRY 
+9876 continue  
+if(isfirst.eqv..false.) then
+  filename='fort.14.trim'
+endif
+#endif
 
-OPEN(13, FILE='fort.14',STATUS='OLD')
+OPEN(13, FILE=FILENAME,STATUS='OLD')
 !Read title 
 READ(13,*) dmy
 !Read number of elements and nodes
@@ -125,21 +169,29 @@ ELSE !if the last PE
     LEFTOVER = NE - (CHUNK*NPROC)         
     CHUNK = CHUNK + LEFTOVER 
 ENDIF
-ALLOCATE(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
+
 ALLOCATE(IEL_LOC(CHUNK),NNEL_LOC(3,CHUNK),NNEL_G(3,NE_G),EIND(3*CHUNK),EPTR(CHUNK+1))
-!! Read nodal connectivity table
-IF(MYPROC.EQ.0) THEN 
-  DO I = 1,NP_G 
-    READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
-  ENDDO
-ELSE 
-  DO I = 1,NP 
-    READ(13,*)
-  ENDDO 
-ENDIF
-CALL MPI_BCAST(X_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
-CALL MPI_BCAST(Y_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
-CALL MPI_BCAST(DP_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+! no need to re read this in
+if(isfirst.eqv..true.) then 
+  allocate(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
+  ! Read nodal connectivity table
+  IF(MYPROC.EQ.0) THEN 
+    DO I = 1,NP_G 
+      READ(13,*) J,X_G(I),Y_G(I),DP_G(I)
+    ENDDO
+  ELSE 
+    DO I = 1,NP_g 
+      READ(13,*)
+    ENDDO 
+  ENDIF
+  CALL MPI_BCAST(X_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+  CALL MPI_BCAST(Y_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+  CALL MPI_BCAST(DP_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
+else 
+  DO i=1,np_g
+    read(13,*)
+  enddo
+endif
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
@@ -193,11 +245,12 @@ IF(MYPROC.EQ.0) THEN
 ENDIF
 
 #ifdef TRIM_DRY
-IF(MYPROC.EQ.0) THEN
-  PRINT *, "Trimming dry elements..."
-ENDIF
-CALL RM_DRY 
-#endif 
+if(isfirst.eqv..true.) then 
+  CALL RM_DRY ! this rewrites the graph to a new file and restarts to top of this subroutine
+  isfirst=.FALSE.
+  GOTO 9876
+endif
+#endif
 
 K=1
 DO I = 1,SIZE(EIND)+1,3 !eles are triangular  
@@ -207,17 +260,11 @@ ENDDO
 
 ALLOCATE(ELMDIST(NPROC+1)) !same as vtxdist since dual graph 
 ELMDIST=0 
-#ifndef TRIM_DRY 
 DO I = 0,NPROC !the ele numbers on each rank
   ELMDIST(I+1)=(I*(CHUNK-LEFTOVER))+1
 ENDDO
-#else           
-DO I = 0,NPROC ! leftover isn't valid anymore. the ele numbers on each rank
-  ELMDIST(I+1)=(I*CHUNK)+1
-ENDDO
-#endif
-ELMDIST(NPROC+1)=NE_G+1 
-
+ELMDIST(NPROC+1)=NE_G+1
+! initial localization of dual graph vertex weights 
 ALLOCATE(VTXWGTS_G(NE_G))
 ALLOCATE(VTXWGTS_LOC(CHUNK),VSIZES_LOC(CHUNK)) ! initially vtwgts is size chun
 !IF(MYPROC.EQ.0) THEN 
