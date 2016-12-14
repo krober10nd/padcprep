@@ -46,7 +46,7 @@ if(myproc.eq.0) then
   PRINT *, "TRIMMING GRAPH..."
 endif
 
-MinDepth=0.50D0
+MinDepth=-2.0D0
 AvgDepth_LOC=0D0 
 
 O=1
@@ -62,7 +62,7 @@ ENDDO
 
 printno=0
 DO I =1,chunk !if it's ge than mindepth, keep it
-  IF(AVGDEPTH_LOC(I).GE.MinDEPTH) THEN 
+  IF(AVGDEPTH_LOC(I).GT.MinDEPTH) THEN 
     printno=printno+1
   ENDIF
 ENDDO
@@ -74,15 +74,15 @@ endif
 K=1 
 jj=1
 DO I = 1,chunk
-  IF(AVGDEPTH_LOC(I).GE.MinDepth) THEN
+  IF(AVGDEPTH_LOC(I).GT.MinDepth) THEN
     NNEL_LOC_TRIM(1,jj)=NNEL_LOC(1,K)
     NNEL_LOC_TRIM(2,jj)=NNEL_LOC(2,K)
     NNEL_LOC_TRIM(3,jj)=NNEL_LOC(3,K)
-    K = K + 1 
     jj = jj + 1
   ENDIF
+  K = K + 1 
 ENDDO
-CALL mpi_allreduce(k-1,ne_g,1,mpi_int,mpi_sum,mpi_comm_world,ierr)
+CALL mpi_allreduce(jj-1,ne_g,1,mpi_int,mpi_sum,mpi_comm_world,ierr)
 if(myproc.eq.0) then 
   print *, "resized the problem to ",ne_g," elements."
 endif
