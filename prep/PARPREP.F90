@@ -8,7 +8,7 @@ IMPLICIT NONE
 
 INTEGER,POINTER              :: XADJ2(:),ADJNCY2(:) ! dual graph structure 
 TYPE(C_PTR),ALLOCATABLE      :: PTRXADJ(:),PTRADJNCY(:) !args for parmetis 
-INTEGER                      :: OPTS(3),OPTS_RP(4),WGTFLAG=2,NUMFLAG=1,NCON=1,EDGECUT=0,NPARTS ! args for parmetis
+INTEGER                      :: OPTS(3),OPTS_RP(4),WGTFLAG=2,NUMFLAG=1,NCON=1,EDGECUT=0,NPARTS,NOFFLINE ! args for parmetis
 INTEGER                      :: NCOMMONNODES=2 !args for parmetis 
 INTEGER,ALLOCATABLE          :: ELMWGT(:),ADJWGT_LOC(:) ! args for parmetis
 REAL(8)                      :: UBVEC=1.05D0,ITR=1000D0 !args for parmetis 
@@ -32,8 +32,16 @@ EXTERNAL ParMETIS_V3_Mesh2Dual
 EXTERNAL ParMETIS_V3_AdaptiveRepart 
 EXTERNAL ParMETIS_V3_PartMeshKWay
 
-!THIS DOESN'T HAVE TO EQUAL 
-NPARTS = NPROC         
+if(myproc.eq.0) then 
+  print *, "enter nparts"
+  read *, nparts 
+  print *, "enter number of offline ranks." 
+  read *, noffline
+  nparts=nparts-noffline 
+endif         
+call mpi_bcast(nparts,1,mpi_int,0,mpi_comm_world,ierr)
+call mpi_bcast(noffline,1,mpi_int,0,mpi_comm_world,ierr)
+
 !IF(IT.EQ.1) THEN
   ALLOCATE(PARTE_G(NE_G),PARTE_LOC(CHUNK),PARTE_LOC_OLD(CHUNK),PARTN_G(NP_G))
   PARTE_G=-1 !this are based on FEM nodes 
@@ -114,8 +122,8 @@ CALL MPI_ALLREDUCE(MPI_IN_PLACE,PARTN_G,NP_G,MPI_INT,MPI_MAX,MPI_COMM_WORLD,IERR
 ! rank NPROC+1
 #ifdef TRIM_DRY 
  DO I = 1,NP_G
-    IF(PARTN_G(I).EQ.0) THEN 
-      PARTN_G(I)=NPROC+1
+    IF(PARTN_G(I).EQ.-1) THEN 
+      PARTN_G(I)=NPARTS+1
     ENDIF
  ENDDO
 #endif
