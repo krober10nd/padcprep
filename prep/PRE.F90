@@ -1,6 +1,7 @@
 MODULE PRE
 USE MESSENGER
-
+USE KDTREE2_MODULE  
+ 
 IMPLICIT NONE 
 
 !This module contains most of the global variables, read/write subroutines for
@@ -8,9 +9,7 @@ IMPLICIT NONE
 !relevant information locally on each MYPROC.  
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 CHARACTER(len=80)           :: dmy !garbage  
-CHARACTER(len=*), PARAMETER ::FILEBASE = "MYPROC_"
-CHARACTER(LEN=*), PARAMETER ::FILEEND  = ".14"
-CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
+!CHARACTER(LEN=20)           :: FILENAME !filename used to write the subdomain grids
 INTEGER                     :: NE, NP,NE_G,NP_G  !number of elements,nodes    
 REAL(8),ALLOCATABLE         :: X_G(:),Y_G(:),DP_G(:)
 REAL(8),ALLOCATABLE         :: X_LOC(:),Y_LOC(:),DP_LOC(:) 
@@ -21,67 +20,116 @@ INTEGER                     :: CHUNK,CHUNK_NP,LEFTOVER  !num of local ele, num. 
 INTEGER                     :: NOPE,NETA,NBOU,NVEL !boundary information
 INTEGER,ALLOCATABLE         :: IEL_LOC(:),NNEL_LOC(:,:),NNEL_G(:,:),EIND(:),EPTR(:),ELMDIST(:) !local ele conn.
 INTEGER                     :: IT ! time step counter 
-LOGICAL                     :: isfirst=.true.
+LOGICAL,SAVE                :: isfirst=.true.
+! for kd tree 
+TYPE(KDTREE2), POINTER :: TREE
+TYPE(KDTREE2_RESULT), ALLOCATABLE :: KDRESULTS(:)
+
 
 CONTAINS 
+!--------------------------------------------------------------------
+!      S U B R O U T I N E   B U I L D  KD  T  R  E  E
+!--------------------------------------------------------------------
+!  BUILDS KD TREE TO STORE NODES FOR QUICK LOOK-UP
+!--------------------------------------------------------------------
+SUBROUTINE BUILDKDTREE
+
+IMPLICIT NONE 
+
+REAL(8),ALLOCATABLE :: bcxy(:,:) 
+allocate(bcxy(2,NP_G))
+
+bcxy(1,:)=X_G
+bcxy(2,:)=Y_G 
+
+! build kdtree 
+tree => kdtree2_create(bcxy,rearrange=.true.,sort=.true.)
+ALLOCATE(KDRESULTS(100)) !get 100 neighbors
+
+return 
+end subroutine 
 
 !---------------------------------------------------------------------
 !      S U B R O U T I N E   R E M O V E   D R Y 
 !---------------------------------------------------------------------
-!  REMOVES DRY ELEMENTS ABOVE MIN DEPTH, THEN RE-WRITES
-!  THE GRAPH TO A FILE CALLED 'FORT.14.DRY'
+!  REMOVES DRY ELEMENTS ABOVE MIN DEPTH. Additionally, the element must feature all their neighbors
+!  also dry above some min-depth, THEN RE-WRITES
+!  THE GRAPH TO A FILE CALLED 'FORT.14.trim'
 !---------------------------------------------------------------------
 SUBROUTINE RM_DRY                  
 
 IMPLICIT NONE 
 
 INTEGER :: I,J,JJ,K,O !counters
-INTEGER :: printno,pe
+INTEGER :: print_no,pe,numNeighs
+INTEGER,ALLOCATABLE :: eleNeigh(:) 
 INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM(:,:),EIND_TRIM(:)
-REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP
-REAL(8) :: AVGDEPTH_LOC(chunk) 
+REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP,NM1_X,NM2_X,NM3_X,NM1_Y,NM2_Y,NM3_Y
+REAL(8) :: AVGDEPTH_LOC(chunk),AVGX_LOC(chunk),AVGY_LOC(chunk) 
 LOGICAL :: finish=.false.
 
 if(myproc.eq.0) then 
   PRINT *, "TRIMMING GRAPH..."
+  print *, "Enter min. depth to consider initially dry"
+  read *, MinDepth
 endif
 
-MinDepth=-2.0D0
+call mpi_bcast(MinDepth,1,mpi_double,0,mpi_comm_world,ierr)
 AvgDepth_LOC=0D0 
 
+if(myproc.eq.0) then 
+   print *, "building kd tree..." 
+endif
+call buildkdtree
+if(myproc.eq.0) then 
+  print *, "built kd tree!"
+endif
+
+!calculate avgerage elemental depth below geoid
 O=1
 DO I = 1,CHUNK
   NM1_DP=DP_G(EIND(O))
+  NM1_X=X_G(EIND(O))
+  NM1_Y=Y_G(EIND(O))
   O=O+1 
   NM2_DP=DP_G(EIND(O)) 
+  NM2_X=X_G(EIND(O)) 
+  NM2_Y=Y_G(EIND(O)) 
   O=O+1
   NM3_DP=DP_G(EIND(O))
+  NM3_X=X_G(EIND(O))
+  NM3_Y=Y_G(EIND(O))
   O=O+1
   AvgDepth_LOC(I)=(NM1_DP+NM2_DP+NM3_DP)/3D0
+  AvgX_LOC(I)=(NM1_X+NM2_X+NM3_X)/3D0
+  AvgY_LOC(I)=(NM1_Y+NM2_Y+NM3_Y)/3D0
 ENDDO
 
-printno=0
-DO I =1,chunk !if it's ge than mindepth, keep it
-  IF(AVGDEPTH_LOC(I).GT.MinDEPTH) THEN 
-    printno=printno+1
+print_no=0
+DO I =1,chunk !if it's gt than mindepth, keep it
+  IF(AVGDEPTH_LOC(I).GT.MinDEPTH) THEN
+       ! search the nearest 100 points 
+        call kdtree2_n_nearest(tp=tree,qv=(/AvgX_LOC(I),AvgY_LOC(I)/), nn=100,results=KDRESULTS)
+        print_no=print_no+1
   ENDIF
 ENDDO
 
-IF(printno.ne.0) then 
-  ALLOCATE(NNEL_LOC_TRIM(3,PRINTNO))
+IF(print_no.ne.0) then 
+  ALLOCATE(NNEL_LOC_TRIM(3,PRINT_NO))
 endif
 
 K=1 
 jj=1
 DO I = 1,chunk
   IF(AVGDEPTH_LOC(I).GT.MinDepth) THEN
-    NNEL_LOC_TRIM(1,jj)=NNEL_LOC(1,K)
-    NNEL_LOC_TRIM(2,jj)=NNEL_LOC(2,K)
-    NNEL_LOC_TRIM(3,jj)=NNEL_LOC(3,K)
-    jj = jj + 1
+       NNEL_LOC_TRIM(1,jj)=NNEL_LOC(1,K)
+       NNEL_LOC_TRIM(2,jj)=NNEL_LOC(2,K)
+       NNEL_LOC_TRIM(3,jj)=NNEL_LOC(3,K)
+       jj = jj + 1
   ENDIF
   K = K + 1 
 ENDDO
+
 CALL mpi_allreduce(jj-1,ne_g,1,mpi_int,mpi_sum,mpi_comm_world,ierr)
 if(myproc.eq.0) then 
   print *, "resized the problem to ",ne_g," elements."
@@ -104,9 +152,9 @@ jj=1
 do while(finish.eqv..false.) 
   pe = pe + 1 
   if(myproc.eq.pe) then 
-     print *, MYPROC ," has opened the file. Printing ", printno 
+     !print *, MYPROC ," has opened the file. Printing ", print_/no 
      open(unit=13,file='fort.14.trim',access='append')
-     do i = 1,printno
+     do i = 1,print_no
        write(13,77) jj,3,nnel_loc_trim(1,i),nnel_loc_trim(2,i),nnel_loc_trim(3,i) !write nnel 
        jj=jj+1 
      enddo
@@ -114,8 +162,8 @@ do while(finish.eqv..false.)
    endif
 
   call mpi_bcast(jj,1,mpi_int,pe,mpi_comm_world,ierr)
+  ! wait until all ranks finish writing ele connectivity
   call mpi_barrier(mpi_comm_world,ierr) 
-  print *, jj
   if(pe.eq.nproc-1) then 
     finish=.true. 
   endif 
@@ -140,7 +188,7 @@ SUBROUTINE READGRAPH
 
 IMPLICIT NONE 
 
-INTEGER :: I,J,K,O,ITEMP !counters
+INTEGER :: I,J,K,O,ITEMP
 REAL(8) :: T1,T2
 CHARACTER(LEN=256) :: FILENAME
  
@@ -170,8 +218,9 @@ ELSE !if the last PE
     CHUNK = CHUNK + LEFTOVER 
 ENDIF
 
+!important allocate statement
 ALLOCATE(IEL_LOC(CHUNK),NNEL_LOC(3,CHUNK),NNEL_G(3,NE_G),EIND(3*CHUNK),EPTR(CHUNK+1))
-! no need to re read this in
+
 if(isfirst.eqv..true.) then 
   allocate(X_G(NP_G),Y_G(NP_G),DP_G(NP_G)) 
   ! Read nodal connectivity table
@@ -187,11 +236,12 @@ if(isfirst.eqv..true.) then
   CALL MPI_BCAST(X_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
   CALL MPI_BCAST(Y_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
   CALL MPI_BCAST(DP_G,NP_G,MPI_DOUBLE,0,MPI_COMM_WORLD,IERR)
-else 
-  DO i=1,np_g
+else ! don't re-read nodal table in since it's already in memory 
+  do i=1,np_g
     read(13,*)
   enddo
 endif
+
 ! Read element connectivity table in chunks
 ! Here we read in the fort.14 ele. connectivity table by skipping over the parts
 ! MYPROC isn't getting. 
@@ -246,9 +296,9 @@ ENDIF
 
 #ifdef TRIM_DRY
 if(isfirst.eqv..true.) then 
-  CALL RM_DRY ! this rewrites the graph to a new file and restarts to top of this subroutine
+  CALL RM_DRY ! this rewrites the graph to a new file and restarts to top of PRE
   isfirst=.FALSE.
-  GOTO 9876
+  GOTO 9876 
 endif
 #endif
 
