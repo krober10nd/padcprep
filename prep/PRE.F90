@@ -67,6 +67,7 @@ INTEGER,ALLOCATABLE :: NNEL_LOC_TRIM(:,:),EIND_TRIM(:)
 REAL(8) :: MINDEPTH,NM1_DP,NM2_DP,NM3_DP,NM1_X,NM2_X,NM3_X,NM1_Y,NM2_Y,NM3_Y
 REAL(8) :: AVGDEPTH_LOC(chunk),AVGX_LOC(chunk),AVGY_LOC(chunk) 
 LOGICAL :: finish=.false.
+INTEGER                     :: KOUNT
 
 if(myproc.eq.0) then 
   PRINT *, "TRIMMING GRAPH..."
@@ -105,11 +106,25 @@ DO I = 1,CHUNK
   AvgY_LOC(I)=(NM1_Y+NM2_Y+NM3_Y)/3D0
 ENDDO
 
+kount=1
 print_no=0
 DO I =1,chunk !if it's gt than mindepth, keep it
-  IF(AVGDEPTH_LOC(I).GT.MinDEPTH) THEN
+  IF(AVGDEPTH_LOC(I).gt.MinDEPTH) THEN
        ! search the nearest 100 points 
         call kdtree2_n_nearest(tp=tree,qv=(/AvgX_LOC(I),AvgY_LOC(I)/), nn=100,results=KDRESULTS)
+!test the k-d tree to make sure its working
+#ifdef DEBUG
+        if(myproc.eq.0.and.kount.eq.1) then 
+          print *, "for element ",I," located at ",AvgX_LOC(I),AvgY_LOC(I)   
+          open(unit=13,file='nneigh.debug') 
+          write(13,5)"nearest neighbors"  
+          do K = 1,100
+            write(13,66) X_G(KDRESULTS(K)%idx),Y_G(KDRESULTS(K)%idx)
+          enddo
+          close(13)
+          kount=kount+1
+        endif
+#endif
         print_no=print_no+1
   ENDIF
 ENDDO
@@ -169,12 +184,15 @@ do while(finish.eqv..false.)
   endif 
 enddo 
 
-5  format(a25)
-6  format(2I15)
-55 format(I10,3f25.16)
-77 format(5I9) 
 ! this will be rebuilt in read_graph 
 deallocate(IEL_LOC,NNEL_LOC,NNEL_G,EIND,EPTR)
+
+5  format(a25)
+6  format(2I15)
+66 format(2f25.16)
+55 format(I10,3f25.16)
+77 format(5I9) 
+
 
 RETURN 
 END SUBROUTINE RM_DRY
